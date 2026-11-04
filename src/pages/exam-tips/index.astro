@@ -1,0 +1,200 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const triage = `
+flowchart TB
+  Q["1 · Read the scenario"] --> P["2 · Which platform, version<br/>and MI update policy?"]
+  P --> S["3 · Is the feature GA there,<br/>or preview behind a switch?"]
+  S --> R["4 · What is the real requirement?<br/>protect · find · change · ship"]
+  R --> E["5 · Eliminate answers that solve<br/>a neighbouring requirement"]
+  E --> C["6 · Choose the most specific,<br/>least-privilege option"]
+`;
+---
+
+<NoteLayout
+  slug="exam-tips"
+  description="DP-800 final review: key numbers and limits, GA-versus-preview by platform, renames and Learn-versus-documentation discrepancies, commonly confused pairs, a scenario-to-answer lookup table and a night-before checklist."
+  intro="The last page to read before the exam. It condenses the traps from every other page: the numbers worth memorising, the features whose status differs by platform, the places where Learn and the documentation disagree, and the pairs of options the exam deliberately puts side by side."
+>
+  <h2 id="how-to-read-a-question">How to read a DP-800 question</h2>
+  <Mermaid code={triage} caption="Platform first: half the wrong answers on this exam are features that work, just not on the platform or update policy in the scenario." />
+
+  <h2 id="key-numbers">Key numbers</h2>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Area</th><th>Number</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Exam</td><td>700 · 100 min · 35–40 / 35–40 / 25–30%</td><td>Pass mark (of 1000), typical associate exam time, the three weightings</td></tr>
+        <tr><td>Vectors</td><td>1,998 · 3,996</td><td>Maximum dimensions for <code>vector(n)</code> float32 and <code>vector(n, float16)</code></td></tr>
+        <tr><td>Vector index</td><td>100</td><td>Minimum non-NULL vectors before <code>CREATE VECTOR INDEX</code> (error 42266)</td></tr>
+        <tr><td>Vector search</td><td>42274</td><td>The error for <code>TOP_N</code> against a latest-version index</td></tr>
+        <tr><td>RRF</td><td>k = 60</td><td>Conventional constant in <code>1 / (k + rank)</code></td></tr>
+        <tr><td>Chunking</td><td>CHUNK_SIZE in characters · OVERLAP 0–50%</td><td><code>AI_GENERATE_CHUNKS</code>, <code>CHUNK_TYPE = FIXED</code> only</td></tr>
+        <tr><td><code>sp_invoke_external_rest_endpoint</code></td><td>timeout 1–230 s (30) · retry 0–10 · return 0 for 2xx</td><td>Otherwise the return value is the HTTP status</td></tr>
+        <tr><td>Data API builder</td><td>page size 100 · max 100,000 · cache TTL 5 s</td><td>Defaults; <code>$first=-1</code> asks for the maximum</td></tr>
+        <tr><td>CES</td><td>256 KB (128–1,024)</td><td>Default and range of <code>@max_message_size_kb</code></td></tr>
+        <tr><td>T-SQL</td><td>MAXRECURSION 100 · THROW ≥ 50000, severity 16 · TRY…CATCH 11–19</td><td>Recursive CTE default limit; user errors; catchable severities</td></tr>
+        <tr><td>Indexes</td><td>999 · 1,048,576</td><td>Nonclustered indexes per table; rows per columnstore rowgroup</td></tr>
+        <tr><td>Regex</td><td>2 MB · repetition ≤ 1,000</td><td>LOB input limit; maximum counted repetition</td></tr>
+        <tr><td>Compatibility</td><td>170</td><td>Needed by <code>REGEXP_LIKE</code>, the regex TVFs and <code>AI_GENERATE_CHUNKS</code></td></tr>
+        <tr><td>SQL database in Fabric</td><td>32 vCores · 4 TB · 3 per trial capacity</td><td>Resource limits</td></tr>
+        <tr><td>Azure SQL Database CDC</td><td>S3 and above</td><td>Basic, S0, S1 and S2 don't support CDC</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="ga-versus-preview">GA versus preview, by platform</h2>
+  <p>
+    The features whose status differs by platform — the ones the study guide's "commonly used preview features" warning
+    is about. The full matrix is on the <a href={`${href('sql-foundations')}#which-feature-exists-where`}>Foundations</a> page.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-orange">
+      <thead><tr><th>Feature</th><th>SQL Server 2025</th><th>Azure SQL DB</th><th>Azure SQL MI</th><th>Fabric SQL database</th></tr></thead>
+      <tbody>
+        <tr><td>Vector index, <code>VECTOR_SEARCH</code></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> AUTD · <span class="pill p-amber">Preview</span> 2025</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Half-precision vectors</td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Fuzzy string matching</td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td></tr>
+        <tr><td>Change event streaming</td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td></tr>
+        <tr><td>Full-text search</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-amber">Preview</span></td></tr>
+        <tr><td>Data virtualization (external tables)</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-green">GA</span></td><td>Parquet and CSV from OneLake</td></tr>
+        <tr><td>External models and AI functions</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> AUTD only</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>SDK-style SQL projects</td><td colspan="4">GA in VS Code · preview in Visual Studio 2022 · not in Visual Studio 2026 · Fabric target platform in preview</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="renames-and-discrepancies">Renames and discrepancies</h2>
+  <p>
+    Where Learn modules, the study guide and the live documentation disagree, these notes follow the documentation. Know
+    both versions so neither throws you.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-slate">
+      <thead><tr><th>Topic</th><th>What you may read</th><th>What the documentation says now</th></tr></thead>
+      <tbody>
+        <tr><td>Model platform name</td><td>Azure AI Foundry, "Azure OpenAI in Azure AI Foundry Models"</td><td><strong>Microsoft Foundry</strong> (the study guide uses the new name; the old portal is "Foundry (classic)")</td></tr>
+        <tr><td>Fabric assistant name</td><td>"Fabric Copilot" (Learn module)</td><td>"Copilot in Microsoft Fabric" / "Microsoft Copilot in Fabric" (study guide)</td></tr>
+        <tr><td>Study guide "Get trained" link</td><td>Points to the <strong>DP-750</strong> exam page</td><td>DP-800's training is course DP-800T00-A and its three learning paths</td></tr>
+        <tr><td>"authentication tables"</td><td>In the CI/CD pipeline-controls objective</td><td>No such GitHub feature; read it as pipeline authentication (OIDC, environment secrets)</td></tr>
+        <tr><td>Approximate search syntax</td><td><code>VECTOR_SEARCH(…, TOP_N = 10)</code></td><td><code>SELECT TOP (10) WITH APPROXIMATE … ORDER BY distance</code>; <code>TOP_N</code> deprecated, error 42274 on new indexes</td></tr>
+        <tr><td>Vector index behaviour</td><td>Tables become read-only; filters applied after the search</td><td>Latest version: full DML and iterative filtering; GA in Azure SQL Database since September 2026</td></tr>
+        <tr><td>DAB authentication provider</td><td><code>AzureAd</code>, <code>StaticWebApps</code></td><td><code>EntraId</code> (old name still accepted); default is <code>Unauthenticated</code> in DAB 2.x</td></tr>
+        <tr><td>DAB entity metadata</td><td><code>mappings</code>, <code>source.key-fields</code>, parameters as an object</td><td>A <code>fields</code> array (alias, primary-key, description) and parameters as an array — the old forms are deprecated</td></tr>
+        <tr><td>Prompt file inputs</td><td><code>{"{{procedureName}}"}</code>, referenced with <code>#</code> (Learn)</td><td><code>${'{'}input:procedureName{'}'}</code>, run as <code>/name</code> or <em>Chat: Run Prompt</em> (VS Code)</td></tr>
+        <tr><td>CES protocol</td><td>AMQP examples</td><td>AMQP deprecated from 15 August 2026: <code>AzureEventHubs</code> (Azure SQL DB, Fabric) or <code>AzureEventHubsApacheKafka</code> (SQL Server 2025, MI)</td></tr>
+        <tr><td>Fabric encryption</td><td>Limitations page: TDE and customer-managed keys not supported</td><td>Feature table lists TDE, and the security page documents workspace customer-managed keys — expect "Fabric manages encryption at rest"</td></tr>
+        <tr><td>Fabric auditing</td><td>Feature table: SQL Server Auditing — No</td><td>Fabric has its own SQL auditing to OneLake; the "No" refers to SQL Server Audit objects</td></tr>
+        <tr><td>MI update policy</td><td>"MI supports it"</td><td>Often only with the SQL Server 2025 or Always-up-to-date policy; external models and AI functions need Always-up-to-date</td></tr>
+        <tr><td>Vector indexes in CI/CD</td><td>Deploy everything from the <code>.dacpac</code></td><td>A DACPAC can skip the vector index (fewer than 100 rows) — create it in a post-deployment step after loading data</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="commonly-confused-pairs">Commonly confused pairs</h2>
+  <div class="table-wrap">
+    <table class="tbl t-purple">
+      <thead><tr><th>Pair</th><th>The difference that decides the answer</th></tr></thead>
+      <tbody>
+        <tr><td>Always Encrypted vs dynamic data masking</td><td>AE hides data from the server and DBAs; DDM only changes what query results show to users without <code>UNMASK</code></td></tr>
+        <tr><td>Always Encrypted vs column-level encryption vs TDE</td><td>Client-side keys · server-side keys you open in T-SQL · at-rest files and backups only</td></tr>
+        <tr><td>Deterministic vs randomized</td><td>Equality, joins and indexes vs stronger secrecy (operations need secure enclaves)</td></tr>
+        <tr><td>RLS filter vs block predicate</td><td>Hide rows from reads vs stop writes that break the rule</td></tr>
+        <tr><td>Change Tracking vs CDC vs CES</td><td>Which rows changed · every change with old and new values · each change pushed to a stream</td></tr>
+        <tr><td>Functions SQL trigger vs Logic Apps</td><td>Code, needs Change Tracking · low-code workflow, polls with identity or rowversion columns</td></tr>
+        <tr><td>RCSI vs SNAPSHOT</td><td>Statement-level versions, no code change · transaction-level versions, opt in per transaction, update conflicts possible</td></tr>
+        <tr><td>Blocking vs deadlock</td><td>A wait that ends · a cycle the engine breaks by killing a victim (1205)</td></tr>
+        <tr><td>Query Store vs Query Performance Insight</td><td>Engine feature on every platform · Azure SQL Database portal view over Query Store</td></tr>
+        <tr><td>DeployReport vs Script vs DriftReport</td><td>What publish would change (XML) · the T-SQL it would run · what changed outside the pipeline (registered databases)</td></tr>
+        <tr><td>Sequence vs IDENTITY</td><td>Shared across tables, value before insert, cycles · bound to one column</td></tr>
+        <tr><td>Inline vs multi-statement TVF</td><td>Expanded into the query and optimized · a black box filling a table variable</td></tr>
+        <tr><td>Temporal vs ledger</td><td>History you can query as of a time · tamper evidence you can verify</td></tr>
+        <tr><td>JSON_VALUE vs JSON_QUERY</td><td>Scalar (NULL for objects) · object or array</td></tr>
+        <tr><td>RANK vs DENSE_RANK vs ROW_NUMBER</td><td>Gaps after ties · no gaps · unique even for ties</td></tr>
+        <tr><td>NOT IN vs NOT EXISTS</td><td>No rows if the subquery returns a NULL · NULL-safe</td></tr>
+        <tr><td>THROW vs RAISERROR</td><td>Re-raises or raises severity 16, ends the batch · legacy, chosen severity, formatting</td></tr>
+        <tr><td>CONTAINS vs FREETEXT</td><td>Precise terms, phrases, NEAR, Boolean · natural-language meaning of the words</td></tr>
+        <tr><td>ENN vs ANN</td><td><code>VECTOR_DISTANCE</code> over every row, exact · <code>VECTOR_SEARCH</code> + DiskANN, approximate and fast</td></tr>
+        <tr><td>Cosine vs dot vs Euclidean</td><td>Angle (default for text) · same ranking as cosine on normalized vectors · magnitude matters</td></tr>
+        <tr><td>External model vs <code>sp_invoke_external_rest_endpoint</code></td><td>Embeddings through <code>AI_GENERATE_EMBEDDINGS</code> · any HTTPS call, including chat completions</td></tr>
+        <tr><td><code>@mssql</code> chat vs inline completions</td><td>Schema-aware · not schema-aware</td></tr>
+        <tr><td><code>copilot-instructions.md</code> vs <code>*.instructions.md</code> vs <code>*.prompt.md</code></td><td>Always · when <code>applyTo</code> matches · on demand as <code>/name</code></td></tr>
+        <tr><td>MCP <code>stdio</code> vs <code>http</code></td><td>Local child process, Simulator auth, a fixed role · remote server URL with real authentication</td></tr>
+        <tr><td>SQL database vs Warehouse vs SQL analytics endpoint</td><td>Read-write OLTP · analytical warehouse · read-only T-SQL over Delta tables</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="scenario-to-answer">Scenario to answer</h2>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>The scenario says…</th><th>Choose</th></tr></thead>
+      <tbody>
+        <tr><td>DBAs and the cloud operator must never see national IDs</td><td>Always Encrypted (deterministic if you must look them up)</td></tr>
+        <tr><td>Support staff see partial phone numbers; managers see all</td><td>Dynamic data masking + granular <code>UNMASK</code> for managers</td></tr>
+        <tr><td>Each tenant sees only its rows through a shared connection pool</td><td>RLS with a <code>SESSION_CONTEXT</code> predicate set read-only on connection open, plus a block predicate</td></tr>
+        <tr><td>The app on Azure Container Apps must connect without a password</td><td>Managed identity + contained Entra user <code>FROM EXTERNAL PROVIDER</code></td></tr>
+        <tr><td>Embedding calls must not store an API key in the database</td><td>Database scoped credential with <code>IDENTITY = 'Managed Identity'</code> + RBAC role on the model resource</td></tr>
+        <tr><td>Prove to auditors that no row was altered after insert</td><td>Append-only ledger table with digests in immutable storage</td></tr>
+        <tr><td>Report prices as they were on any past date</td><td>System-versioned temporal table, <code>FOR SYSTEM_TIME AS OF</code></td></tr>
+        <tr><td>Readers time out waiting for writers on an OLTP database</td><td><code>READ_COMMITTED_SNAPSHOT ON</code> (and optimized locking)</td></tr>
+        <tr><td>A query regressed after a deployment; you can't change the app</td><td>Query Store: force the previous plan or add a Query Store hint</td></tr>
+        <tr><td>Two procedures deadlock updating the same two tables</td><td>Same access order in both, shorter transactions, supporting indexes, retry on 1205</td></tr>
+        <tr><td>Find out whether someone hot-fixed production outside the pipeline</td><td><code>DriftReport</code> (registered database) or a scheduled <code>DeployReport</code></td></tr>
+        <tr><td>Status codes must be identical in every environment</td><td>Post-deployment <code>MERGE</code> script in the SQL project</td></tr>
+        <tr><td>Production deploys need DBA approval and no stored Azure secret</td><td>GitHub environment with required reviewers + OIDC <code>azure/login</code></td></tr>
+        <tr><td>Expose tables and procedures as REST and GraphQL with no API code</td><td>Data API builder entities in <code>dab-config.json</code></td></tr>
+        <tr><td>Let an AI agent read products but never delete them</td><td>SQL MCP Server with <code>delete-record</code> disabled and read-only entity permissions</td></tr>
+        <tr><td>A downstream system needs every change with before and after values</td><td>CDC (pull) or change event streaming (push)</td></tr>
+        <tr><td>Run code within seconds of a row change, outside the database</td><td>Azure Functions with the SQL trigger binding (Change Tracking on)</td></tr>
+        <tr><td>Users search by meaning and by exact part numbers</td><td>Hybrid: full-text + vector, fused with RRF</td></tr>
+        <tr><td>Semantic search over 20 million chunks with low latency</td><td>DiskANN vector index + <code>SELECT TOP (N) WITH APPROXIMATE</code></td></tr>
+        <tr><td>Measure how accurate the approximate search is</td><td>Recall against an exact <code>VECTOR_DISTANCE</code> baseline</td></tr>
+        <tr><td>Documents exceed the embedding model's input limit</td><td><code>AI_GENERATE_CHUNKS</code> with overlap, a chunk table, one embedding per chunk</td></tr>
+        <tr><td>Answer customer questions from the product table with a chat model</td><td>RAG: retrieve, <code>FOR JSON</code> context, <code>sp_invoke_external_rest_endpoint</code>, <code>JSON_VALUE($.result.choices[0].message.content)</code></td></tr>
+        <tr><td>Copilot keeps ignoring the team's naming rules</td><td><code>.github/copilot-instructions.md</code> (or a path-specific instructions file)</td></tr>
+        <tr><td>Copilot should see the live schema of the dev database</td><td>MSSQL extension (<code>@mssql</code> / agent mode) or SQL MCP Server with a read-only identity</td></tr>
+        <tr><td>Query a Fabric lakehouse from VS Code agent mode</td><td>Publish a Fabric data agent and add its MCP server URL</td></tr>
+        <tr><td>Find near-duplicate customer names with typos</td><td><code>JARO_WINKLER_SIMILARITY</code> / <code>EDIT_DISTANCE</code> (preview), blocked by postcode first</td></tr>
+        <tr><td>Validate e-mail format on insert</td><td>A <code>CHECK</code> constraint with <code>REGEXP_LIKE</code> (compatibility level 170)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="night-before-checklist">Night-before checklist</h2>
+  <ul class="checklist">
+    <li>I can say, for vector indexes, regex, fuzzy matching, CES, external models and full-text, where each is GA and where it is preview.</li>
+    <li>I know the three switches: <code>PREVIEW_FEATURES</code>, compatibility level 170 and <code>external rest endpoint enabled</code>.</li>
+    <li>I can tell Always Encrypted, column encryption, TDE and dynamic data masking apart from a one-line requirement.</li>
+    <li>I can write an RLS filter predicate and security policy, and explain why a block predicate is needed.</li>
+    <li>I know the isolation levels' phenomena table and what RCSI and optimized locking change.</li>
+    <li>I can read a Query Store fix: <code>sp_query_store_force_plan</code> versus <code>sp_query_store_set_hints</code>.</li>
+    <li>I can read an SDK-style <code>.sqlproj</code>, a publish profile and a GitHub Actions deploy job with OIDC and an environment gate.</li>
+    <li>I know what <code>DeployReport</code>, <code>Script</code>, <code>DriftReport</code> and <code>BlockOnPossibleDataLoss</code> do.</li>
+    <li>I can read a <code>dab-config.json</code>: provider, roles, field exclusions, policies, relationships, cache, paging, MCP tools.</li>
+    <li>I can choose between Change Tracking, CDC, CES, the Functions SQL trigger and Logic Apps from what the consumer needs.</li>
+    <li>I can write <code>CREATE EXTERNAL MODEL</code>, chunk with <code>AI_GENERATE_CHUNKS</code> and embed with <code>AI_GENERATE_EMBEDDINGS</code>.</li>
+    <li>I know the <code>VECTOR_SEARCH</code> rules: <code>WITH APPROXIMATE</code>, order by distance ascending, no <code>TOP_N</code>, subquery for window functions.</li>
+    <li>I can compute an RRF score and say why ranks, not scores, are fused.</li>
+    <li>I can find the answer in an <code>sp_invoke_external_rest_endpoint</code> response and handle a 429.</li>
+    <li>I know which Copilot instruction file applies when, and how to add an MCP server in <code>.vscode/mcp.json</code>.</li>
+    <li>I have tried the <a href="https://aka.ms/examdemo" target="_blank" rel="noopener">exam sandbox</a> and the <a href="https://aka.ms/DP800-PA" target="_blank" rel="noopener">practice assessment</a>.</li>
+  </ul>
+
+  <Callout type="tip" title="On the day">
+    <p>
+      Read the platform and version in every scenario before the question itself. When two answers both work, prefer the
+      one that is enforced by the engine over one that relies on the application, and the least-privilege option over
+      the convenient one. Flag long case studies, answer the short items first, and come back.
+    </p>
+  </Callout>
+  <Callout type="exam" title="Exam security">
+    <p>
+      Don't share or look for live exam questions — it breaks Microsoft's exam agreement and the notes don't contain
+      any. Everything here is drawn from the public study guide, the course and the documentation.
+    </p>
+  </Callout>
+</NoteLayout>

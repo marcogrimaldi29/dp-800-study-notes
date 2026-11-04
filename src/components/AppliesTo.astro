@@ -1,0 +1,73 @@
+---
+import FluentIcon from './FluentIcon.astro';
+
+/**
+ * An "Applies to" strip in the spirit of the SQL docs' banners: one pill per
+ * platform the exam spans, coloured by status, so a feature is never implied to
+ * work everywhere.
+ *
+ *   ga       → green, "GA"
+ *   preview  → amber, "Preview"
+ *   no       → grey and struck through, "Not available"
+ *   omit a platform to leave it out of the strip.
+ *
+ * `note` adds a line underneath for the detail a pill cannot carry — an update
+ * policy, a configuration switch, a version.
+ */
+type Status = 'ga' | 'preview' | 'no';
+
+interface Props {
+  /** SQL Server 2025 (17.x). */
+  ss?: Status;
+  /** Azure SQL Database. */
+  db?: Status;
+  /** Azure SQL Managed Instance. */
+  mi?: Status;
+  /** SQL database in Microsoft Fabric. */
+  fabric?: Status;
+  /** Override the platform names, e.g. { ss: 'SQL Server 2022+' }. */
+  labels?: Partial<Record<'ss' | 'db' | 'mi' | 'fabric', string>>;
+  note?: string;
+}
+
+const { ss, db, mi, fabric, labels = {}, note } = Astro.props;
+
+const NAMES = {
+  ss: 'SQL Server 2025',
+  db: 'Azure SQL Database',
+  mi: 'Azure SQL MI',
+  fabric: 'SQL database in Fabric',
+} as const;
+
+const STATUS = {
+  ga: { cls: 'p-green', icon: 'checkmark_circle', word: 'GA' },
+  preview: { cls: 'p-amber', icon: 'beaker', word: 'Preview' },
+  no: { cls: 'p-gray', icon: 'subtract_circle', word: 'Not available' },
+} as const;
+
+const items = (
+  [
+    ['ss', ss],
+    ['db', db],
+    ['mi', mi],
+    ['fabric', fabric],
+  ] as const
+)
+  .filter(([, s]) => s)
+  .map(([key, s]) => ({ name: labels[key] ?? NAMES[key], ...STATUS[s as Status] }));
+---
+
+<div class="applies" role="note">
+  <span class="applies-lbl">Applies to</span>
+  {
+    items.map((i) => (
+      <span class={`pill ${i.cls}`} title={`${i.name}: ${i.word}`}>
+        <FluentIcon name={i.icon} size={16} />
+        {i.name}
+        {i.word === 'Preview' && <span>· preview</span>}
+        {i.word === 'Not available' && <span class="visually-hidden">(not available)</span>}
+      </span>
+    ))
+  }
+  {note && <span class="applies-note">{note}</span>}
+</div>

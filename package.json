@@ -1,0 +1,22 @@
+{
+  "name": "dp-800-study-notes",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Study notes for Exam DP-800: Developing AI-Enabled Database Solutions (Microsoft Certified: SQL AI Developer Associate).",
+  "engines": {
+    "node": ">=26"
+  },
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@fluentui/svg-icons": "^1.1.345",
+    "astro": "^7.4.5",
+    "mermaid": "~12.2.0"
+  }
+}

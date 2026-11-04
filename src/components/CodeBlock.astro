@@ -1,0 +1,28 @@
+---
+import { Code } from 'astro:components';
+
+/**
+ * Syntax-highlighted code with DP-700 v2's language chip.
+ *
+ * Highlighting is done by Shiki at build time with VS Code's own default themes,
+ * light-plus and dark-plus — the look of the MSSQL extension candidates use —
+ * so no highlighter ships to the browser. Both themes are emitted inline and
+ * swapped by the `html[data-theme="dark"] .astro-code` rule in global.css, so
+ * code follows the theme switcher rather than staying dark in both themes.
+ */
+interface Props {
+  code: string;
+  /** Shiki grammar id. T-SQL uses the `sql` grammar. */
+  lang?: string;
+  /** Chip label, when it should differ from the grammar id (e.g. "T-SQL"). */
+  label?: string;
+}
+
+const { code, lang = 'sql', label } = Astro.props;
+const chip = label ?? (lang === 'sql' ? 'T-SQL' : lang);
+---
+
+<div class="code-block">
+  <span class="lang">{chip}</span>
+  <Code code={code.trim()} lang={lang as any} themes={{ light: 'light-plus', dark: 'dark-plus' }} />
+</div>

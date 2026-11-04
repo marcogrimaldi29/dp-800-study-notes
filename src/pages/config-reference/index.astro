@@ -1,0 +1,445 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const files = `
+flowchart LR
+  subgraph REPO["Repository"]
+    direction TB
+    GH[".github/<br/>copilot-instructions.md · instructions/ · prompts/ · CODEOWNERS · workflows/"] ~~~ VS[".vscode/mcp.json<br/>MCP servers for agent mode"]
+    VS ~~~ DB["database/<br/>Contoso.Database.sqlproj · object scripts · publish profiles"]
+    DB ~~~ API["api/<br/>dab-config.json"]
+  end
+`;
+
+const dab = `{
+  "$schema": "https://github.com/Azure/data-api-builder/releases/download/v2.1.5/dab.draft.schema.json",
+  "data-source": {
+    "database-type": "mssql",
+    // Never a literal: @env() reads an environment variable, @akv() a Key Vault secret
+    "connection-string": "@env('SQL_CONNECTION_STRING')"
+  },
+  "runtime": {
+    "rest":    { "enabled": true, "path": "/api" },
+    "graphql": { "enabled": true, "path": "/graphql", "allow-introspection": false },
+    "mcp": {
+      "enabled": true,
+      "path": "/mcp",
+      "description": "Product catalog for the Contoso storefront",   // sent to MCP clients as instructions
+      "dml-tools": {
+        "describe-entities": true,
+        "read-records": true,
+        "create-record": false,
+        "update-record": false,
+        "delete-record": false,                                     // a common production choice
+        "execute-entity": true,
+        "aggregate-records": { "enabled": true, "query-timeout": 30 }
+      }
+    },
+    "host": {
+      "mode": "production",                                         // development enables Simulator and richer errors
+      "cors": { "origins": ["https://shop.contoso.com"], "allow-credentials": false },
+      "authentication": {
+        "provider": "EntraId",                                      // formerly AzureAd; default is Unauthenticated
+        "jwt": {
+          "audience": "api://contoso-catalog",
+          "issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0"
+        }
+      }
+    },
+    "cache":      { "enabled": true, "ttl-seconds": 30 },
+    "pagination": { "default-page-size": 100, "max-page-size": 1000 },
+    "telemetry":  { "application-insights": { "enabled": true, "connection-string": "@env('APPLICATIONINSIGHTS_CONNECTION_STRING')" } }
+  },
+  "entities": {
+    "Product": {
+      "source": { "object": "dbo.Product", "type": "table", "object-description": "Products for sale" },
+      "fields": [
+        { "name": "ProductID", "primary-key": true },
+        { "name": "ListPrice", "alias": "price", "description": "Price in EUR" }   // DAB 2.x: replaces "mappings"
+      ],
+      "rest":    { "enabled": true, "path": "/products" },
+      "graphql": { "enabled": true, "type": { "singular": "Product", "plural": "Products" } },
+      "cache":   { "enabled": true, "ttl-seconds": 60, "level": "L1" },
+      "permissions": [
+        { "role": "anonymous",     "actions": [ { "action": "read", "fields": { "exclude": ["Cost", "Embedding"] } } ] },
+        { "role": "catalogEditor", "actions": [ "create", "read", "update" ] }
+      ],
+      "relationships": {
+        "category": {
+          "cardinality": "one",
+          "target.entity": "Category",
+          "source.fields": ["CategoryID"],
+          "target.fields": ["CategoryID"]
+        }
+      }
+    },
+    "Category": {
+      "source": { "object": "dbo.Category", "type": "table" },
+      "permissions": [ { "role": "anonymous", "actions": [ "read" ] } ],
+      "relationships": {
+        "products": { "cardinality": "many", "target.entity": "Product" }   // inferred from the foreign key
+      }
+    },
+    "MyOrders": {
+      "source": { "object": "dbo.vw_OrderSummary", "type": "view" },
+      "fields": [ { "name": "OrderNo", "primary-key": true } ],            // views need a key (was "key-fields")
+      "permissions": [
+        {
+          "role": "authenticated",
+          "actions": [ { "action": "read",
+                         "policy": { "database": "@item.CustomerOid eq @claims.oid" } } ]   // per-user rows
+        }
+      ]
+    },
+    "PlaceOrder": {
+      "source": {
+        "object": "dbo.usp_PlaceOrder",
+        "type": "stored-procedure",
+        "parameters": [ { "name": "CustomerID", "required": true, "description": "Buyer" } ]   // DAB 2.x array format
+      },
+      "rest":    { "methods": ["post"] },
+      "graphql": { "operation": "mutation" },
+      "mcp":     { "custom-tool": true },                                   // exposed as a named MCP tool
+      "permissions": [ { "role": "authenticated", "actions": [ "execute" ] } ]
+    }
+  }
+}`;
+
+const cli = `# Create the file (the connection string stays in an environment variable)
+dab init --database-type mssql --connection-string "@env('SQL_CONNECTION_STRING')" --host-mode development
+
+# Add entities: a table, a view with a key, a stored procedure
+dab add Product   --source dbo.Product --permissions "anonymous:read"
+dab add MyOrders  --source dbo.vw_OrderSummary --source.type view \\
+                  --fields.name OrderNo --fields.primary-key true --permissions "authenticated:read"
+dab add PlaceOrder --source dbo.usp_PlaceOrder --source.type stored-procedure \\
+                  --permissions "authenticated:execute" --rest.methods "post" --graphql.operation "mutation"
+
+# Evolve them
+dab update Product  --relationship category --target.entity Category --cardinality one
+dab update Product  --cache.enabled true --cache.ttl-seconds 60
+dab configure --runtime.host.authentication.provider EntraId
+dab configure --runtime.mcp.enabled true
+
+# Check and run
+dab validate                      # schema, permissions and database connectivity
+dab start                         # REST /api, GraphQL /graphql, MCP /mcp on http://localhost:5000
+dab start --mcp-stdio role:anonymous --config ./dab-config.json   # MCP over stdio for a local client`;
+
+const sqlproj = `<Project DefaultTargets="Build">
+  <Sdk Name="Microsoft.Build.Sql" Version="2.3.0" />
+
+  <PropertyGroup>
+    <Name>Contoso.Database</Name>
+    <!-- Target platform: Sql170 = SQL Server 2025, SqlAzureV12 = Azure SQL Database,
+         SqlDbFabric = SQL database in Fabric (preview) -->
+    <DSP>Microsoft.Data.Tools.Schema.Sql.SqlAzureV12DatabaseSchemaProvider</DSP>
+    <ModelCollation>1033, CI</ModelCollation>
+    <RunSqlCodeAnalysis>True</RunSqlCodeAnalysis>
+    <TreatTSqlWarningsAsErrors>False</TreatTSqlWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- Every .sql file under the folder is part of the model by default (globbing).
+       Scripts that are not schema objects are taken out of the build and wired as deployment scripts. -->
+  <ItemGroup>
+    <Build Remove="Scripts\\**\\*.sql" />
+    <PreDeploy  Include="Scripts\\PreDeployment.sql" />
+    <PostDeploy Include="Scripts\\PostDeployment.sql" />
+  </ItemGroup>
+
+  <!-- Per-environment values, referenced in scripts as $(Environment) -->
+  <ItemGroup>
+    <SqlCmdVariable Include="Environment">
+      <DefaultValue>dev</DefaultValue>
+    </SqlCmdVariable>
+  </ItemGroup>
+
+  <!-- Database references as NuGet packages, for example the master database -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SqlServer.Dacpacs.Azure.Master" Version="170.0.4" />
+  </ItemGroup>
+</Project>`;
+
+const profile = `<?xml version="1.0" encoding="utf-8"?>
+<!-- publish/Production.publish.xml — deployment options, never credentials -->
+<Project ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <TargetDatabaseName>ContosoDb</TargetDatabaseName>
+    <BlockOnPossibleDataLoss>True</BlockOnPossibleDataLoss>
+    <DropObjectsNotInSource>False</DropObjectsNotInSource>
+    <BlockWhenDriftDetected>True</BlockWhenDriftDetected>
+    <RegisterDataTierApplication>True</RegisterDataTierApplication>
+    <IncludeTransactionalScripts>True</IncludeTransactionalScripts>
+  </PropertyGroup>
+  <ItemGroup>
+    <SqlCmdVariable Include="Environment">
+      <Value>prod</Value>
+    </SqlCmdVariable>
+  </ItemGroup>
+</Project>`;
+
+const workflow = `name: Database CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['database/**']
+  push:
+    branches: [main]
+    paths: ['database/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    services:
+      sql:                                            # throwaway SQL Server for integration tests
+        image: mcr.microsoft.com/mssql/server:2025-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: \${{ secrets.CI_SA_PASSWORD }}
+        ports: ['1433:1433']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build the model (validates every reference)
+        run: dotnet build database/Contoso.Database.sqlproj -c Release
+      - name: Deploy to the CI container and run tests
+        run: |
+          dotnet tool install -g microsoft.sqlpackage
+          sqlpackage /Action:Publish \\
+            /SourceFile:database/bin/Release/Contoso.Database.dacpac \\
+            /TargetConnectionString:"Server=localhost;Database=CiDb;User ID=sa;Password=\${{ secrets.CI_SA_PASSWORD }};TrustServerCertificate=True"
+          # run unit and integration tests here (for example tSQLt via sqlcmd)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dacpac
+          path: database/bin/Release/Contoso.Database.dacpac
+
+  deploy-production:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment: production                          # required reviewers, branch rule, env secrets
+    permissions:
+      contents: read
+      id-token: write                                # OIDC token for azure/login: no client secret
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dacpac
+      - uses: azure/login@v3
+        with:
+          client-id: \${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: \${{ vars.AZURE_TENANT_ID }}
+          subscription-id: \${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Review the plan
+        uses: azure/sql-action@v2
+        with:
+          connection-string: \${{ secrets.PROD_SQL_CONNECTION_STRING }}   # Authentication=Active Directory Default
+          path: ./Contoso.Database.dacpac
+          action: DeployReport
+      - name: Publish
+        uses: azure/sql-action@v2
+        with:
+          connection-string: \${{ secrets.PROD_SQL_CONNECTION_STRING }}
+          path: ./Contoso.Database.dacpac
+          action: Publish
+          arguments: '/p:BlockOnPossibleDataLoss=true'`;
+
+const codeowners = `# .github/CODEOWNERS — the last matching pattern wins
+*                      @contoso/app-team
+/database/             @contoso/dba-team
+/database/Security/    @contoso/dba-team @contoso/security
+/.github/workflows/    @contoso/platform-team`;
+
+const copilotInstr = `# Contoso database — instructions for GitHub Copilot
+
+## Platform
+- Azure SQL Database, compatibility level 170. Do not use features that need PREVIEW_FEATURES.
+
+## T-SQL conventions
+- Schema-qualify every object (dbo.Customer). List columns explicitly; never SELECT *.
+- New procedures: CREATE OR ALTER, SET NOCOUNT ON, SET XACT_ABORT ON, TRY...CATCH with THROW.
+- Store semi-structured data in json columns; add a JSON index for queried paths.
+- Embeddings: vector(1536) from the external model Embed3Small; search with VECTOR_SEARCH
+  and SELECT TOP (N) WITH APPROXIMATE, never the deprecated TOP_N parameter.
+
+## Security
+- Parameterize all input; dynamic SQL only through sp_executesql with parameters.
+- Never generate GRANT ... TO public, logins with passwords, credentials or connection strings.
+
+## Project
+- Schema lives in database/ as an SDK-style SQL project; one object per file under Schema/ObjectType/.
+- Reference data goes in Scripts/PostDeployment.sql as an idempotent MERGE.`;
+
+const pathInstr = `---
+applyTo: "database/**/*.sql"
+excludeAgent: "code-review"
+---
+# Rules for database object scripts
+- File name equals the object name: database/dbo/Tables/Customer.sql.
+- Tables need a named primary key constraint (PK_<Table>) and named defaults (DF_<Table>_<Column>).
+- Foreign key columns get a nonclustered index.`;
+
+const promptFile = `---
+description: Generate a stored procedure that follows the team template
+agent: agent
+tools: ['mssql/*']
+---
+Create a stored procedure named \${input:procName:usp_VerbNoun} that \${input:purpose}.
+
+Follow .github/copilot-instructions.md. Include:
+- SET NOCOUNT ON and SET XACT_ABORT ON
+- an explicit transaction for any data modification, inside TRY...CATCH with THROW
+- a header comment describing parameters and result sets
+
+Write it to database/dbo/StoredProcedures/\${input:procName}.sql.`;
+
+const mcpJson = `{
+  "inputs": [
+    { "id": "catalog_token", "type": "promptString", "description": "Token for the catalog API", "password": true }
+  ],
+  "servers": {
+    // SQL MCP Server started by VS Code as a child process (local development)
+    "contoso-sql-local": {
+      "type": "stdio",
+      "command": "dab",
+      "args": ["start", "--mcp-stdio", "role:anonymous", "--config", "\${workspaceFolder}/api/dab-config.json", "--LogLevel", "error"]
+    },
+    // SQL MCP Server already running in Azure Container Apps (HTTP transport)
+    "contoso-sql-remote": {
+      "type": "http",
+      "url": "https://contoso-catalog.azurecontainerapps.io/mcp",
+      "headers": { "Authorization": "Bearer \${input:catalog_token}" }   // prompted, never stored
+    },
+    // A Fabric data agent published as an MCP server (lakehouse or warehouse data)
+    "fabric-sales-agent": {
+      "type": "http",
+      "url": "<MCP server URL copied from the data agent's Settings → Model Context Protocol tab>"
+    }
+  }
+}`;
+---
+
+<NoteLayout
+  slug="config-reference"
+  description="DP-800 configuration reference: an annotated dab-config.json for REST, GraphQL and MCP with the DAB CLI; an SDK-style .sqlproj and publish profile; a GitHub Actions build-test-deploy workflow with OIDC, environments and azure/sql-action; CODEOWNERS; GitHub Copilot instruction and prompt files; and VS Code MCP server configuration."
+  intro="Every file the exam expects you to read, in one place. Each sample is annotated with the options that turn into answers — the ones that secure an endpoint, block a dangerous deployment or scope an instruction — and checked against the current versions of the tools."
+>
+  <Mermaid code={files} caption="Where each file lives in a typical repository. The exam usually shows one of them with a line missing or wrong." />
+  <Callout type="note" title="Versions these samples target">
+    <p>
+      Data API builder 2.1, <code>Microsoft.Build.Sql</code> 2.3.0, SqlPackage 170.5, <code>actions/checkout@v7</code>,
+      <code>actions/setup-dotnet@v6</code>, <code>actions/upload-artifact@v7</code>,
+      <code>actions/download-artifact@v8</code>, <code>azure/login@v3</code> and <code>azure/sql-action@v2</code> — the
+      current majors in November 2026. Older Learn samples pin earlier majors; the syntax that matters for the exam is
+      the same.
+    </p>
+  </Callout>
+
+  <h2 id="dab-config-json">dab-config.json</h2>
+  <p>
+    One file configures the data source, the three endpoints, security, caching, paging and every entity. Comments are
+    shown for annotation — remove them in a real file, or keep the file valid JSON.
+  </p>
+  <CodeBlock code={dab} lang="jsonc" label="dab-config.json" />
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead><tr><th>Section</th><th>What the exam asks about it</th></tr></thead>
+      <tbody>
+        <tr><td><code>data-source.connection-string</code></td><td>Comes from <code>@env()</code> or <code>@akv()</code> (Key Vault, with a root <code>azure-key-vault.endpoint</code>), ideally with <code>Authentication=Active Directory Managed Identity</code> — never a literal secret</td></tr>
+        <tr><td>Column types</td><td>DAB doesn't serialize <code>json</code>, <code>vector</code>, <code>xml</code>, spatial, <code>hierarchyid</code> or <code>sql_variant</code> columns — expose them through a view or procedure that casts or omits them</td></tr>
+        <tr><td><code>runtime.host.authentication</code></td><td><code>EntraId</code>/<code>Custom</code> validate JWTs; <code>AppService</code> trusts EasyAuth; <code>Unauthenticated</code> (default) is anonymous-only; <code>Simulator</code> needs development mode</td></tr>
+        <tr><td><code>runtime.host.mode</code></td><td><code>production</code> for deployed APIs</td></tr>
+        <tr><td><code>runtime.mcp.dml-tools</code></td><td>Global on/off per tool; a disabled tool is hidden from <code>list_tools</code> whatever the entity permissions</td></tr>
+        <tr><td><code>entities.*.permissions</code></td><td>Role → actions, field <code>include</code>/<code>exclude</code>, database <code>policy</code> with <code>@item</code> and <code>@claims</code></td></tr>
+        <tr><td><code>entities.*.fields</code></td><td>DAB 2.x replacement for <code>mappings</code> (alias) and <code>key-fields</code> (primary-key) — the two can't be mixed</td></tr>
+        <tr><td><code>entities.*.relationships</code></td><td><code>cardinality</code> one/many, <code>target.entity</code>, optional field lists, <code>linking.object</code> for many-to-many (GraphQL)</td></tr>
+        <tr><td><code>entities.*.cache</code></td><td><code>enabled</code>, <code>ttl-seconds</code> (default 5, or the runtime value) and <code>level</code> <code>L1</code> or <code>L1L2</code> (Redis-backed)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="dab-cli">DAB CLI</h3>
+  <CodeBlock code={cli} lang="bash" label="bash" />
+
+  <h2 id="sdk-style-sqlproj">SDK-style .sqlproj</h2>
+  <CodeBlock code={sqlproj} lang="xml" label=".sqlproj" />
+  <ul>
+    <li><strong>Globbing:</strong> every <code>.sql</code> file is in the model unless removed — that is why deployment scripts are taken out with <code>Build Remove</code> and wired as <code>PreDeploy</code>/<code>PostDeploy</code>.</li>
+    <li><strong>One pre- and one post-deployment script</strong> per project; include further files from them with SQLCMD <code>:r</code>.</li>
+    <li><strong>SQLCMD variables</strong> carry per-environment values; set them in a publish profile or with <code>/v:Name=value</code>.</li>
+    <li>Build with <code>dotnet build</code> to get <code>bin/&lt;config&gt;/Contoso.Database.dacpac</code>.</li>
+  </ul>
+
+  <h3 id="publish-profile">Publish profile</h3>
+  <CodeBlock code={profile} lang="xml" label="Production.publish.xml" />
+  <dl class="terms">
+    <dt><code>BlockOnPossibleDataLoss</code> (default true)</dt>
+    <dd>Stops a deployment that would drop a column, narrow a type or otherwise lose data.</dd>
+    <dt><code>DropObjectsNotInSource</code> (default false)</dt>
+    <dd>Deletes objects in the target that are not in the project — powerful, dangerous on shared databases.</dd>
+    <dt><code>RegisterDataTierApplication</code> and <code>BlockWhenDriftDetected</code></dt>
+    <dd>Register the deployed schema so later deployments (and <code>DriftReport</code>) can detect out-of-band changes.</dd>
+  </dl>
+
+  <h2 id="github-actions-deploy-workflow">GitHub Actions deploy workflow</h2>
+  <CodeBlock code={workflow} lang="yaml" label=".github/workflows/database.yml" />
+  <Callout type="exam" title="What each control in the workflow does">
+    <ul>
+      <li><code>pull_request</code> + <code>paths</code>: validate only database changes; the PR can't merge until this check passes (a required status check in the branch ruleset).</li>
+      <li><code>environment: production</code>: the job waits for the environment's required reviewers and can only read that environment's secrets.</li>
+      <li><code>id-token: write</code> + <code>azure/login</code> with <code>client-id</code>, <code>tenant-id</code>, <code>subscription-id</code>: OIDC federation — no client secret anywhere.</li>
+      <li>One <code>.dacpac</code> artifact, built once and deployed to every environment.</li>
+      <li><code>azure/sql-action</code> actions: <code>Publish</code>, <code>Script</code>, <code>DeployReport</code>, <code>DriftReport</code>; it builds a <code>.sqlproj</code> itself when given one.</li>
+    </ul>
+  </Callout>
+
+  <h3 id="codeowners">CODEOWNERS</h3>
+  <CodeBlock code={codeowners} lang="plaintext" label="CODEOWNERS" />
+  <p>
+    CODEOWNERS only <em>requests</em> reviews; it becomes a control when the branch ruleset requires "review from Code
+    Owners" before merging.
+  </p>
+
+  <h2 id="github-copilot-instruction-files">GitHub Copilot instruction files</h2>
+  <CodeBlock code={copilotInstr} lang="markdown" label=".github/copilot-instructions.md" />
+  <CodeBlock code={pathInstr} lang="markdown" label=".github/instructions/sql-objects.instructions.md" />
+  <CodeBlock code={promptFile} lang="markdown" label=".github/prompts/new-procedure.prompt.md" />
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>File</th><th>Frontmatter</th><th>Applied</th></tr></thead>
+      <tbody>
+        <tr><td><code>copilot-instructions.md</code></td><td>None</td><td>Automatically, to every request in the repository</td></tr>
+        <tr><td><code>*.instructions.md</code></td><td><code>applyTo</code> (comma-separated globs), optional <code>excludeAgent</code> (<code>code-review</code> or <code>cloud-agent</code>)</td><td>Automatically, when a matching file is in context — together with the repository-wide file</td></tr>
+        <tr><td><code>*.prompt.md</code></td><td><code>description</code>, <code>name</code>, <code>agent</code>, <code>model</code>, <code>tools</code>, <code>argument-hint</code></td><td>On demand, as <code>/name</code> in chat; inputs with <code>${'{'}input:name:placeholder{'}'}</code></td></tr>
+        <tr><td><code>AGENTS.md</code></td><td>None</td><td>For agents; the nearest file up the tree takes precedence</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Precedence when several sets apply: personal instructions first, then repository, then organization — all are
+    sent, so avoid conflicts rather than relying on order. Background in
+    <a href={`${href('skill-1-design-develop')}#copilot-instruction-files`}>Skill 1</a>.
+  </p>
+
+  <h2 id="mcp-server-configuration">MCP server configuration</h2>
+  <CodeBlock code={mcpJson} lang="jsonc" label=".vscode/mcp.json" />
+  <ul>
+    <li><strong><code>stdio</code></strong>: the client launches the server process (no port, no network); DAB forces Simulator authentication and runs every call as the role after <code>--mcp-stdio</code>.</li>
+    <li><strong><code>http</code></strong>: connect to a running server's <code>/mcp</code> URL; authenticate with headers fed from <code>inputs</code> (prompted, optionally masked) or an Entra sign-in.</li>
+    <li>Start, stop and inspect servers with <strong>MCP: List Servers</strong>; enable or disable individual tools in agent mode's tools picker.</li>
+    <li>Visual Studio reads <code>.mcp.json</code> and <code>.vscode/mcp.json</code>; GitHub Copilot in SSMS 22.7+ supports MCP servers in agent mode.</li>
+  </ul>
+</NoteLayout>

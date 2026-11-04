@@ -1,0 +1,133 @@
+---
+/**
+ * A Mermaid diagram in a captioned figure.
+ *
+ * The graph source is rendered as text inside the figure. Mermaid replaces it
+ * with an SVG on load; if the script fails or JavaScript is off, the reader
+ * still sees the (readable) diagram definition rather than an empty box.
+ *
+ * Mermaid is a dependency of this project rather than a CDN script, so the
+ * version is pinned and the site has no third-party runtime requests.
+ */
+interface Props {
+  /** Mermaid graph definition. */
+  code: string;
+  /** Caption shown under the diagram. */
+  caption?: string;
+}
+
+const { code, caption } = Astro.props;
+---
+
+<figure class="figure">
+  <pre class="mermaid">{code.trim()}</pre>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { EVT_DIAGRAMS, EVT_THEME } from '../lib/keys';
+
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>('pre.mermaid'));
+
+  // Mermaid is a large dependency, so it is imported dynamically: pages with no
+  // diagram never download it, and pages that do have one render their text
+  // first and upgrade to SVG afterwards.
+  if (nodes.length) {
+    const { default: mermaid } = await import('mermaid');
+
+    // Keep the original source so the diagram can be re-rendered when the
+    // theme flips (Mermaid bakes colours into the generated SVG).
+    nodes.forEach((n) => {
+      if (!n.dataset.src) n.dataset.src = n.textContent ?? '';
+    });
+
+    const read = (name: string, fallback: string) => {
+      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+      return v || fallback;
+    };
+
+    async function render() {
+      const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'base',
+        // Mermaid 12's default ELK layout. Both ELK and dagre ignore a subgraph's
+        // `direction` once any node inside it links to a node outside it, so the
+        // row-shaped diagrams stack their subgraphs with invisible subgraph links
+        // and keep every visible edge inside a row.
+        fontFamily: read('--font', '"Segoe UI", system-ui, sans-serif'),
+        flowchart: { curve: 'basis', useMaxWidth: true, htmlLabels: true, wrappingWidth: 280 },
+        sequence: { useMaxWidth: true },
+        // Themed from the same Fabric tokens as the page, so diagrams follow the
+        // switcher: nodes on surface-2 with a Microsoft-blue border, clusters on
+        // the canvas, inside a figure on the main surface.
+        themeVariables: {
+          darkMode: dark,
+          fontFamily: read('--font', '"Segoe UI", system-ui, sans-serif'),
+          background: read('--surface', '#ffffff'),
+          primaryColor: read('--surface-2', '#f6f9fd'),
+          primaryTextColor: read('--text', '#1b1f27'),
+          primaryBorderColor: read('--ms-blue', '#0f6cbd'),
+          secondaryColor: read('--surface-3', '#eef3f9'),
+          tertiaryColor: read('--bg', '#f3f6fb'),
+          lineColor: read('--text-muted', '#6a7180'),
+          textColor: read('--text-soft', '#4a5160'),
+          mainBkg: read('--surface-2', '#f6f9fd'),
+          nodeBorder: read('--ms-blue', '#0f6cbd'),
+          clusterBkg: read('--bg', '#f3f6fb'),
+          clusterBorder: read('--border-strong', '#cdd6e4'),
+          titleColor: read('--text', '#1b1f27'),
+          edgeLabelBackground: read('--surface', '#ffffff'),
+          // Sequence diagrams.
+          actorBkg: read('--surface-2', '#f6f9fd'),
+          actorBorder: read('--ms-blue', '#0f6cbd'),
+          actorTextColor: read('--text', '#1b1f27'),
+          actorLineColor: read('--border-strong', '#cdd6e4'),
+          signalColor: read('--text-soft', '#4a5160'),
+          signalTextColor: read('--text', '#1b1f27'),
+          labelBoxBkgColor: read('--surface-3', '#eef3f9'),
+          labelBoxBorderColor: read('--border-strong', '#cdd6e4'),
+          labelTextColor: read('--text', '#1b1f27'),
+          loopTextColor: read('--text', '#1b1f27'),
+          activationBkgColor: read('--surface-3', '#eef3f9'),
+          activationBorderColor: read('--ms-blue', '#0f6cbd'),
+          noteBkgColor: read('--surface-3', '#eef3f9'),
+          noteBorderColor: read('--border-strong', '#cdd6e4'),
+          noteTextColor: read('--text', '#1b1f27'),
+        },
+      });
+
+      // Reset every node to its source before re-running.
+      nodes.forEach((n) => {
+        n.removeAttribute('data-processed');
+        n.textContent = n.dataset.src ?? '';
+      });
+
+      try {
+        await mermaid.run({ nodes });
+      } catch (err) {
+        console.warn('Mermaid render failed', err);
+      }
+
+      // Wide diagrams would otherwise shrink to fit a phone until the labels are
+      // unreadable. Give each a floor of 560px (or its natural width, if smaller)
+      // so a narrow figure scrolls sideways instead of scaling the text away.
+      nodes.forEach((n) => {
+        const svg = n.querySelector('svg');
+        const natural = svg?.viewBox?.baseVal?.width;
+        if (svg && natural) svg.style.minWidth = `${Math.min(natural, 560)}px`;
+      });
+
+      // Rendering changes the page height by tens of thousands of pixels, which
+      // invalidates any anchor scroll the browser already performed.
+      window.dispatchEvent(new CustomEvent(EVT_DIAGRAMS));
+    }
+
+    render();
+    window.addEventListener(EVT_THEME, () => {
+      render();
+    });
+  }
+</script>

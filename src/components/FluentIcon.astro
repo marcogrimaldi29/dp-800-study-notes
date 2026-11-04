@@ -1,0 +1,52 @@
+---
+import { readFileSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+
+/**
+ * A Fluent UI System Icon, inlined as SVG at build time from the
+ * @fluentui/svg-icons npm package — no icon font, no CDN and no runtime
+ * request. It plays the role Octicon.astro plays on the GitHub-family notes.
+ *
+ * Fluent ships each icon in a set of sizes and in two styles: Regular, used at
+ * rest, and Filled, used for the active navigation entry as Fluent's own
+ * navigation does. Not every icon exists at every size, so a missing size falls
+ * back to the nearest one that does and is scaled to the requested box — the
+ * SVGs carry a viewBox, so they scale cleanly.
+ *
+ * Decorative by default (aria-hidden). Pass `label` when the icon is the only
+ * thing that names a control.
+ */
+interface Props {
+  /** Fluent icon name in snake_case, e.g. "home", "shield_lock", "search_sparkle". */
+  name: string;
+  size?: 12 | 16 | 20 | 24 | 28 | 32;
+  variant?: 'regular' | 'filled';
+  class?: string;
+  label?: string;
+}
+
+const { name, size = 20, variant = 'regular', class: className, label } = Astro.props;
+
+const require = createRequire(import.meta.url);
+const dir = join(dirname(require.resolve('@fluentui/svg-icons/package.json')), 'icons');
+
+// Requested size first, then the nearest sizes Fluent commonly ships.
+const sizes = [size, 20, 16, 24, 28, 32, 12, 48].filter((s, i, all) => all.indexOf(s) === i);
+const file = sizes.map((s) => join(dir, `${name}_${s}_${variant}.svg`)).find((f) => existsSync(f));
+if (!file) throw new Error(`Fluent icon "${name}" (${variant}) does not exist in @fluentui/svg-icons`);
+
+const raw = readFileSync(file, 'utf8');
+const classes = ['fluent-icon', className].filter(Boolean).join(' ');
+const a11y = label ? `role="img" aria-label="${label.replace(/"/g, '&quot;')}"` : 'aria-hidden="true" focusable="false"';
+
+// Replace the root element's own size with the requested one and let the path
+// inherit the text colour, as Fluent icons do inside Fluent controls.
+const svg = raw.replace(
+  /<svg\b[^>]*?viewBox="([^"]+)"[^>]*>/,
+  (_m, viewBox) =>
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="${viewBox}" fill="currentColor" class="${classes}" ${a11y}>`,
+);
+---
+
+<Fragment set:html={svg} />

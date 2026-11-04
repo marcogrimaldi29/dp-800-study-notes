@@ -1,0 +1,696 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import AppliesTo from '../../components/AppliesTo.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const tableChoice = `
+flowchart LR
+  R1["Query rows as they were<br/>at a past time"] --> T["Temporal table<br/>SYSTEM_VERSIONING = ON"]
+  R2["Prove rows were never<br/>altered or deleted"] --> L["Ledger table<br/>updatable or append-only"]
+  R3["Extreme OLTP latency,<br/>hot latch contention"] --> M["Memory-optimized table<br/>MEMORY_OPTIMIZED = ON"]
+  R4["Query files in a data lake<br/>without loading them"] --> E["External table<br/>or OPENROWSET"]
+  R5["Traverse many-to-many<br/>relationships"] --> G["Graph tables<br/>AS NODE · AS EDGE"]
+  R6["None of these"] --> N["Ordinary rowstore table<br/>plus the right indexes"]
+`;
+
+const copilotStack = `
+flowchart TB
+  DEV["Developer prompt<br/>ask · edit · agent · plan"] --> INSTR
+  subgraph HOST["Copilot chat session"]
+    MODEL["Model picker<br/>choose per task"]
+    INSTR["Instruction files<br/>copilot-instructions.md"]
+    TOOLS["Tools picker<br/>MCP tools on or off"]
+  end
+  TOOLS --> MSSQL["MSSQL extension tools<br/>connect · run_query"]
+  TOOLS --> SQLMCP["SQL MCP Server<br/>Data API builder /mcp"]
+  TOOLS --> FAB["Fabric data agent<br/>as an MCP server"]
+`;
+
+const types = `-- Applies to: all four platforms (vector and json need SQL Server 2025 or later)
+CREATE TABLE dbo.Product
+(
+    ProductID     int IDENTITY(1, 1) NOT NULL,
+    Sku           varchar(20)        NOT NULL,       -- ASCII codes: varchar, not nvarchar
+    Name          nvarchar(200)      NOT NULL,       -- user-facing text: Unicode
+    Description   nvarchar(max)      NULL,           -- LOB, stored off-row when large
+    ListPrice     decimal(10, 2)     NOT NULL,       -- exact numeric; avoid float and money
+    CategoryID    smallint           NOT NULL,       -- smallest type that fits
+    Attributes    json               NULL,           -- native binary JSON
+    Embedding     vector(1536)       NULL,           -- float32 elements; size the model's dimensions
+    CreatedAt     datetime2(3)       NOT NULL
+        CONSTRAINT DF_Product_CreatedAt DEFAULT (SYSUTCDATETIME()),
+    RowVer        rowversion         NOT NULL,       -- optimistic concurrency token
+    CONSTRAINT PK_Product PRIMARY KEY CLUSTERED (ProductID),
+    CONSTRAINT UQ_Product_Sku UNIQUE (Sku),
+    CONSTRAINT CK_Product_ListPrice CHECK (ListPrice >= 0),
+    CONSTRAINT FK_Product_Category FOREIGN KEY (CategoryID)
+        REFERENCES dbo.Category (CategoryID) ON DELETE NO ACTION
+);
+
+-- Covering nonclustered index for a frequent lookup
+CREATE NONCLUSTERED INDEX IX_Product_Category
+    ON dbo.Product (CategoryID) INCLUDE (Name, ListPrice)
+    WHERE ListPrice > 0;                               -- filtered index`;
+
+const columnstore = `-- Real-time operational analytics: a nonclustered columnstore index on an OLTP table
+CREATE NONCLUSTERED COLUMNSTORE INDEX NCCI_SalesOrderLine
+    ON dbo.SalesOrderLine (OrderDate, ProductID, Quantity, LineTotal);
+
+-- Analytics table: clustered columnstore, ordered to improve segment elimination
+-- (ordered CCI: SQL Server 2022+ and Azure SQL; ordered NCCI: SQL Server 2025)
+CREATE CLUSTERED COLUMNSTORE INDEX CCI_FactSales
+    ON dbo.FactSales
+    ORDER (OrderDateKey);`;
+
+const temporal = `-- Applies to: all four platforms
+CREATE TABLE dbo.Price
+(
+    ProductID  int            NOT NULL PRIMARY KEY CLUSTERED,
+    ListPrice  decimal(10, 2) NOT NULL,
+    ValidFrom  datetime2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL,
+    ValidTo    datetime2 GENERATED ALWAYS AS ROW END   HIDDEN NOT NULL,
+    PERIOD FOR SYSTEM_TIME (ValidFrom, ValidTo)
+)
+WITH (SYSTEM_VERSIONING = ON (
+        HISTORY_TABLE = dbo.PriceHistory,
+        HISTORY_RETENTION_PERIOD = 2 YEARS));
+
+-- What was the price on 1 March?
+SELECT ProductID, ListPrice
+FROM dbo.Price FOR SYSTEM_TIME AS OF '2026-03-01T00:00:00'
+WHERE ProductID = 42;`;
+
+const ledger = `-- Applies to: SQL Server 2022+, Azure SQL Database, Azure SQL MI (not SQL database in Fabric)
+
+-- Updatable ledger table: keeps a history table and a ledger view
+CREATE TABLE dbo.AccountBalance
+(
+    AccountID int            NOT NULL PRIMARY KEY,
+    Balance   decimal(19, 4) NOT NULL
+)
+WITH (SYSTEM_VERSIONING = ON, LEDGER = ON);
+
+-- Append-only ledger table: INSERT only, UPDATE and DELETE are blocked
+CREATE TABLE dbo.AuditEvent
+(
+    EventID   bigint IDENTITY NOT NULL,
+    EventTime datetime2      NOT NULL DEFAULT SYSUTCDATETIME(),
+    Detail    nvarchar(4000) NOT NULL
+)
+WITH (LEDGER = ON (APPEND_ONLY = ON));
+
+-- Verify the database against its stored digests
+EXECUTE sys.sp_verify_database_ledger_from_digest_storage;`;
+
+const inmem = `-- Applies to: SQL Server (needs a MEMORY_OPTIMIZED_DATA filegroup),
+-- Azure SQL Database Premium/Business Critical, Azure SQL MI Business Critical.
+-- Not available in SQL database in Fabric.
+CREATE TABLE dbo.ShoppingCart
+(
+    CartID     int       NOT NULL PRIMARY KEY NONCLUSTERED HASH WITH (BUCKET_COUNT = 1000000),
+    CustomerID int       NOT NULL INDEX IX_Customer NONCLUSTERED,
+    CreatedAt  datetime2 NOT NULL
+)
+WITH (MEMORY_OPTIMIZED = ON, DURABILITY = SCHEMA_AND_DATA);   -- SCHEMA_ONLY: data lost on restart
+
+-- Natively compiled procedure for the hot path
+CREATE PROCEDURE dbo.usp_AddCart @CartID int, @CustomerID int
+WITH NATIVE_COMPILATION, SCHEMABINDING
+AS
+BEGIN ATOMIC WITH (TRANSACTION ISOLATION LEVEL = SNAPSHOT, LANGUAGE = N'us_english')
+    INSERT dbo.ShoppingCart (CartID, CustomerID, CreatedAt)
+    VALUES (@CartID, @CustomerID, SYSUTCDATETIME());
+END;`;
+
+const external = `-- Data virtualization: Parquet files in ADLS Gen2
+-- GA in SQL Server 2022+ and Azure SQL MI, preview in Azure SQL Database;
+-- SQL database in Fabric reads Parquet and CSV from OneLake.
+CREATE EXTERNAL DATA SOURCE SalesLake
+WITH (LOCATION = 'adls://sales@contosolake.dfs.core.windows.net');   -- endpoint-specific prefix, not https://
+
+CREATE EXTERNAL FILE FORMAT ParquetFormat WITH (FORMAT_TYPE = PARQUET);
+
+CREATE EXTERNAL TABLE dbo.ext_WebClicks
+(
+    ClickTime datetime2,
+    Url       nvarchar(400),
+    UserId    int
+)
+WITH (LOCATION = 'clicks/2026/*.parquet', DATA_SOURCE = SalesLake, FILE_FORMAT = ParquetFormat);
+
+-- Ad hoc exploration without an external table
+SELECT TOP (10) *
+FROM OPENROWSET(BULK 'clicks/2026/*.parquet', DATA_SOURCE = 'SalesLake', FORMAT = 'parquet') AS f;`;
+
+const graph = `-- Applies to: SQL Server 2017+, Azure SQL Database, Azure SQL MI
+CREATE TABLE dbo.Person   (PersonID int PRIMARY KEY, Name nvarchar(100)) AS NODE;
+CREATE TABLE dbo.Skill    (SkillID  int PRIMARY KEY, Name nvarchar(100)) AS NODE;
+CREATE TABLE dbo.HasSkill
+(
+    Level tinyint,
+    CONSTRAINT EC_HasSkill CONNECTION (dbo.Person TO dbo.Skill) ON DELETE CASCADE
+) AS EDGE;
+
+-- Edges are inserted with the pseudo-columns $from_id and $to_id
+INSERT dbo.HasSkill ($from_id, $to_id, Level)
+SELECT p.$node_id, s.$node_id, 4
+FROM dbo.Person AS p, dbo.Skill AS s
+WHERE p.PersonID = 1 AND s.SkillID = 7;`;
+
+const jsonCol = `-- Applies to: SQL Server 2025, Azure SQL Database, Azure SQL MI (2025 or AUTD policy),
+-- SQL database in Fabric. A JSON index needs a clustered primary key.
+CREATE TABLE dbo.Orders
+(
+    OrderID      int IDENTITY PRIMARY KEY CLUSTERED,
+    OrderDetails json NOT NULL
+);
+
+CREATE JSON INDEX IX_Orders_Details
+    ON dbo.Orders (OrderDetails)
+    FOR ('$.customer.id', '$.status');          -- optional: index only these paths
+
+-- Served by the JSON index
+SELECT OrderID
+FROM dbo.Orders
+WHERE JSON_VALUE(OrderDetails, '$.status') = 'shipped';
+
+-- JSON stored as nvarchar (any version): validate it and index one property
+ALTER TABLE dbo.LegacyOrders
+    ADD CONSTRAINT CK_LegacyOrders_IsJson CHECK (ISJSON(Payload) = 1),
+        CustomerId AS CAST(JSON_VALUE(Payload, '$.customer.id') AS int);
+CREATE INDEX IX_LegacyOrders_CustomerId ON dbo.LegacyOrders (CustomerId);`;
+
+const sequence = `-- Applies to: all four platforms
+CREATE SEQUENCE dbo.OrderNumber
+    AS bigint
+    START WITH 100000
+    INCREMENT BY 1
+    CACHE 50;                    -- faster, but cached values are lost on an unexpected shutdown (gaps)
+
+CREATE TABLE dbo.OrderHeader
+(
+    OrderNo   bigint NOT NULL
+        CONSTRAINT DF_OrderHeader_OrderNo DEFAULT (NEXT VALUE FOR dbo.OrderNumber),
+    OrderDate date   NOT NULL,
+    CONSTRAINT PK_OrderHeader PRIMARY KEY (OrderNo)
+);
+
+-- The same sequence can number rows in several tables, and you can take the
+-- value before the INSERT — neither is possible with IDENTITY.
+DECLARE @next bigint = NEXT VALUE FOR dbo.OrderNumber;`;
+
+const partition = `-- Applies to: all four platforms; Azure SQL Database and Fabric have only the PRIMARY
+-- filegroup, and SQL database in Fabric does not allow SWITCH PARTITION.
+CREATE PARTITION FUNCTION pfOrderMonth (date)
+    AS RANGE RIGHT FOR VALUES ('2026-01-01', '2026-02-01', '2026-03-01');   -- boundary starts a partition
+
+CREATE PARTITION SCHEME psOrderMonth
+    AS PARTITION pfOrderMonth ALL TO ([PRIMARY]);
+
+CREATE TABLE dbo.OrderLine
+(
+    OrderDate date   NOT NULL,
+    OrderNo   bigint NOT NULL,
+    LineNo    int    NOT NULL,
+    Amount    decimal(19, 4) NOT NULL,
+    CONSTRAINT PK_OrderLine PRIMARY KEY CLUSTERED (OrderDate, OrderNo, LineNo)   -- partitioning column in the key
+) ON psOrderMonth (OrderDate);
+
+-- Which partition holds a row, and fast removal of old data
+SELECT $PARTITION.pfOrderMonth('2026-02-14') AS PartitionNumber;
+TRUNCATE TABLE dbo.OrderLine WITH (PARTITIONS (1));`;
+
+const programmability = `-- Indexed view: SCHEMABINDING, two-part names, COUNT_BIG(*) with GROUP BY
+CREATE OR ALTER VIEW dbo.vw_SalesByProduct
+WITH SCHEMABINDING
+AS
+SELECT ProductID, SUM(LineTotal) AS Total, COUNT_BIG(*) AS LineCount
+FROM dbo.SalesOrderLine
+GROUP BY ProductID;
+GO
+CREATE UNIQUE CLUSTERED INDEX UCX_vw_SalesByProduct ON dbo.vw_SalesByProduct (ProductID);
+GO
+
+-- Inline table-valued function: one SELECT, optimized like a parameterized view
+CREATE OR ALTER FUNCTION dbo.tvf_OrdersForCustomer (@CustomerID int)
+RETURNS TABLE
+AS
+RETURN
+    SELECT OrderNo, OrderDate, Total
+    FROM dbo.OrderHeader
+    WHERE CustomerID = @CustomerID;
+GO
+
+-- Stored procedure skeleton the exam expects
+CREATE OR ALTER PROCEDURE dbo.usp_PlaceOrder
+    @CustomerID int,
+    @OrderNo    bigint OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;      -- no "n rows affected" messages
+    SET XACT_ABORT ON;   -- any runtime error dooms and rolls back the transaction
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        SET @OrderNo = NEXT VALUE FOR dbo.OrderNumber;
+        INSERT dbo.OrderHeader (OrderNo, CustomerID, OrderDate) VALUES (@OrderNo, @CustomerID, GETUTCDATE());
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;           -- re-raise the original error to the caller
+    END CATCH;
+END;`;
+
+const trigger = `-- AFTER trigger: set-based, works for multi-row statements
+CREATE OR ALTER TRIGGER dbo.trg_Product_Audit
+ON dbo.Product
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT UPDATE(ListPrice) RETURN;
+    INSERT dbo.PriceChange (ProductID, OldPrice, NewPrice, ChangedAt)
+    SELECT d.ProductID, d.ListPrice, i.ListPrice, SYSUTCDATETIME()
+    FROM inserted AS i
+    JOIN deleted  AS d ON d.ProductID = i.ProductID
+    WHERE i.ListPrice <> d.ListPrice;
+END;`;
+
+const instructions = `<!-- .github/copilot-instructions.md — applies to every chat request in the repository -->
+# Database conventions
+- Target platform: Azure SQL Database, compatibility level 170.
+- Always schema-qualify objects (dbo.Customer) and list columns explicitly; never SELECT *.
+- Stored procedures: SET NOCOUNT ON, SET XACT_ABORT ON, TRY...CATCH with THROW.
+- Parameterize everything; build dynamic SQL only with sp_executesql and parameters.
+- Never emit GRANT ... TO public, credentials, or connection strings.`;
+
+const pathInstr = `---
+applyTo: "src/**/*.sql"
+---
+<!-- .github/instructions/tsql.instructions.md — only for files that match applyTo -->
+Use the json data type for semi-structured columns and add a JSON index for queried paths.
+Prefer CREATE OR ALTER for programmability objects.`;
+---
+
+<NoteLayout
+  slug="skill-1-design-develop"
+  description="DP-800 Skill 1 (35–40%): designing tables, data types, indexes and columnstore; temporal, ledger, in-memory, external and graph tables; JSON columns and indexes; constraints, sequences and partitioning; views, functions, procedures and triggers; advanced T-SQL; and AI-assisted development with GitHub Copilot, Copilot in Fabric and MCP."
+  intro="The biggest-weighted area with Skill 2. It asks you to pick the right table, type, index and programmability object for a requirement, to read advanced T-SQL, and to set up GitHub Copilot and Copilot in Fabric safely — with instruction files and MCP servers that give the assistant real schema context."
+>
+  <Callout type="exam" title="What this skill tests">
+    <p>
+      Four objective groups: <strong>database objects</strong> (tables, specialized tables, JSON, constraints, sequences,
+      partitioning), <strong>programmability objects</strong> (views, functions, procedures, triggers), <strong>advanced
+      T-SQL</strong> (CTEs, window, JSON, regex and fuzzy functions, graph <code>MATCH</code>, correlated queries, error
+      handling) and <strong>AI-assisted tools</strong>. The T-SQL family lives in its own
+      <a href={href('advanced-tsql-deep-dive')}>deep dive</a>; this page covers the design decisions and summarises it.
+    </p>
+  </Callout>
+
+  <h2 id="tables-data-types-and-indexes">Tables, data types and indexes</h2>
+  <p>
+    Table design questions are usually about <strong>size and correctness</strong>: the smallest type that fits, exact
+    numerics for money, Unicode only where users type text, and a clustered key that is narrow, unique, static and
+    ever-increasing. Rows live on 8 KB pages, and a row's fixed in-row data is limited to 8,060 bytes — large
+    <code>(max)</code> values move off-row.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Need</th><th>Choose</th><th>Avoid, and why</th></tr></thead>
+      <tbody>
+        <tr><td>Whole numbers</td><td><code>tinyint</code> 1 B · <code>smallint</code> 2 B · <code>int</code> 4 B · <code>bigint</code> 8 B</td><td>Oversizing every key to <code>bigint</code> widens every index that carries it</td></tr>
+        <tr><td>Money, quantities</td><td><code>decimal(p, s)</code></td><td><code>float</code>/<code>real</code> are approximate; <code>money</code> loses precision in division</td></tr>
+        <tr><td>Date and time</td><td><code>date</code> 3 B, <code>datetime2(n)</code> 6–8 B, <code>datetimeoffset</code> for time zones</td><td><code>datetime</code>: 3.33 ms precision, larger range than needed</td></tr>
+        <tr><td>Text</td><td><code>varchar</code> for ASCII codes; <code>nvarchar</code> or a <code>_UTF8</code> collation for international text</td><td><code>nvarchar(max)</code> everywhere: cannot be an index key, blocks some optimizations</td></tr>
+        <tr><td>Semi-structured data</td><td><code>json</code> (SQL Server 2025+, Azure SQL, Fabric)</td><td><code>nvarchar(max)</code> JSON: reparsed on every read</td></tr>
+        <tr><td>Embeddings</td><td><code>vector(n)</code> — <em>n</em> must match the model's dimensions</td><td><code>varbinary</code> or JSON arrays: no vector functions, no vector index</td></tr>
+        <tr><td>Concurrency token</td><td><code>rowversion</code></td><td>Timestamps compared by value: clock skew and ties</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={types} />
+  <ul>
+    <li><strong>Clustered index</strong> — the table itself, sorted by the key; one per table. The clustering key is copied into every nonclustered index.</li>
+    <li><strong>Nonclustered index</strong> — up to 999 per table; <code>INCLUDE</code> columns make it covering, <code>WHERE</code> makes it filtered.</li>
+    <li><strong>Unique constraint vs unique index</strong> — a constraint is implemented as a unique index; use the constraint when it expresses a business rule.</li>
+  </ul>
+
+  <h3 id="columnstore-indexes">Columnstore indexes</h3>
+  <p>
+    Columnstore stores each column separately in compressed <strong>rowgroups</strong> of up to 1,048,576 rows and runs
+    queries in <strong>batch mode</strong>. A <strong>clustered</strong> columnstore index (CCI) suits fact and history
+    tables; a <strong>nonclustered</strong> columnstore (NCCI) on an OLTP table gives real-time operational analytics without
+    an ETL copy. New rows land in a delta store until the tuple mover compresses them.
+  </p>
+  <CodeBlock code={columnstore} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Azure SQL Database needs Standard S3 or above, General Purpose, Business Critical or Hyperscale. In Fabric a clustered columnstore index must be created with the table, or mirroring stopped first." />
+
+  <h2 id="specialized-tables">Specialized tables</h2>
+  <p>
+    The outline lists five specialized table types. Each answers one specific requirement — pick it from the requirement,
+    not from the feature list.
+  </p>
+  <Mermaid code={tableChoice} caption="Pick the table type from the requirement. Several can combine — a temporal table can also carry a columnstore index — but ledger and in-memory are not available in SQL database in Fabric." />
+
+  <h3 id="temporal-tables">Temporal tables</h3>
+  <p>
+    A system-versioned temporal table keeps the current row and moves every previous version to a <strong>history
+    table</strong>, stamped with the period columns. Query the past with <code>FOR SYSTEM_TIME</code>
+    (<code>AS OF</code>, <code>FROM … TO</code>, <code>BETWEEN … AND</code>, <code>CONTAINED IN</code>, <code>ALL</code>).
+    <code>HIDDEN</code> period columns keep <code>SELECT *</code> unchanged for existing applications.
+  </p>
+  <CodeBlock code={temporal} />
+
+  <h3 id="ledger-tables">Ledger tables</h3>
+  <p>
+    Ledger makes tampering <strong>detectable</strong>: each transaction is hashed into a blockchain-like structure, and
+    <strong>database digests</strong> stored outside the database (immutable Azure Blob storage or Azure Confidential Ledger)
+    let you prove the data has not changed. An <strong>updatable</strong> ledger table keeps history; an
+    <strong>append-only</strong> one blocks updates and deletes. Ledger cannot be turned off for a table once it is on.
+  </p>
+  <CodeBlock code={ledger} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="no" labels={{ ss: 'SQL Server 2022+' }} />
+
+  <h3 id="in-memory-tables">Memory-optimized tables</h3>
+  <p>
+    In-Memory OLTP keeps the table in memory with lock- and latch-free structures — for contention hot spots such as
+    session state, shopping carts and high-rate ingestion. Every memory-optimized table needs at least one index
+    (hash for point lookups, nonclustered for ranges); <code>SCHEMA_ONLY</code> durability trades persistence for speed.
+  </p>
+  <CodeBlock code={inmem} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="no" note="Azure SQL Database: Premium and Business Critical tiers only. Azure SQL MI: Business Critical only." />
+
+  <h3 id="external-tables">External tables</h3>
+  <p>
+    An external table maps files in a data lake — Parquet or CSV in Azure Blob storage or ADLS Gen2 — so they can be
+    queried with T-SQL without loading. <code>OPENROWSET(BULK …)</code> is the ad hoc alternative that needs only the data
+    source. Use the endpoint-specific prefixes <code>abs://</code> and <code>adls://</code>; the generic
+    <code>https://</code> prefix is not accepted for external tables.
+  </p>
+  <CodeBlock code={external} />
+  <AppliesTo ss="ga" db="preview" mi="ga" fabric="ga" labels={{ ss: 'SQL Server 2022+' }} note="SQL Server 2025 reads Parquet, CSV and Delta natively, without the PolyBase services. Azure SQL Database data virtualization is in preview. Fabric: Parquet and CSV from OneLake." />
+
+  <h3 id="graph-tables">Graph tables</h3>
+  <p>
+    Graph tables model entities as <strong>node</strong> tables and relationships as <strong>edge</strong> tables, each
+    with hidden pseudo-columns (<code>$node_id</code>, <code>$from_id</code>, <code>$to_id</code>). An <strong>edge
+    constraint</strong> restricts which node types an edge may connect. Traverse them with <code>MATCH</code> and
+    <code>SHORTEST_PATH</code> — see the <a href={`${href('advanced-tsql-deep-dive')}#graph-queries-with-match`}>deep dive</a>.
+  </p>
+  <CodeBlock code={graph} />
+
+  <h2 id="json-columns-and-indexes">JSON columns and indexes</h2>
+  <p>
+    The native <code>json</code> type stores documents in a parsed binary form: faster reads, in-place updates through
+    the <code>modify</code> method, and better compression. A <strong>JSON index</strong> indexes paths inside the
+    document so one index serves <code>JSON_VALUE</code>, <code>JSON_PATH_EXISTS</code> and <code>JSON_CONTAINS</code>
+    predicates. A <code>json</code> column cannot be the key of an ordinary index.
+  </p>
+  <CodeBlock code={jsonCol} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="MI needs the SQL Server 2025 or Always-up-to-date update policy. On SQL Server 2022 and earlier, store JSON as nvarchar and index a computed column." />
+
+  <h2 id="constraints">Constraints</h2>
+  <dl class="terms">
+    <dt><code>PRIMARY KEY</code></dt>
+    <dd>Unique and not null; one per table; clustered by default unless you say <code>NONCLUSTERED</code>.</dd>
+    <dt><code>FOREIGN KEY</code></dt>
+    <dd>
+      References a primary key or unique constraint. Referential actions <code>ON DELETE</code>/<code>ON UPDATE</code>:
+      <code>NO ACTION</code> (default), <code>CASCADE</code>, <code>SET NULL</code>, <code>SET DEFAULT</code>. Index the
+      foreign key column yourself — SQL Server does not.
+    </dd>
+    <dt><code>UNIQUE</code></dt>
+    <dd>Allows a single <code>NULL</code> (use a filtered unique index to allow many).</dd>
+    <dt><code>CHECK</code></dt>
+    <dd>A row-level predicate; it passes when the expression is true <em>or unknown</em> — so <code>NULL</code> passes.</dd>
+    <dt><code>DEFAULT</code></dt>
+    <dd>Used only when the column is omitted from the <code>INSERT</code>, not when <code>NULL</code> is supplied explicitly.</dd>
+  </dl>
+  <Callout type="exam" title="Trusted versus untrusted constraints">
+    <p>
+      <code>ALTER TABLE … WITH NOCHECK ADD CONSTRAINT</code> skips validating existing rows and leaves the constraint
+      <strong>not trusted</strong> (<code>is_not_trusted = 1</code>), so the optimizer cannot use it. Re-enable with
+      <code>WITH CHECK CHECK CONSTRAINT</code> to validate the data and make it trusted again.
+    </p>
+  </Callout>
+
+  <h2 id="sequences">Sequences</h2>
+  <p>
+    A <code>SEQUENCE</code> is a schema-bound number generator independent of any table. Choose it over
+    <code>IDENTITY</code> when you need the number <strong>before</strong> the insert, one series <strong>shared across
+    tables</strong>, a defined cycle (<code>CYCLE</code>), or a block of values at once
+    (<code>sp_sequence_get_range</code>).
+  </p>
+  <CodeBlock code={sequence} />
+  <Callout type="warn" title="Neither sequences nor IDENTITY are gap-free">
+    <p>
+      Rolled-back transactions consume values, and <code>CACHE</code> loses unused cached values on an unexpected
+      shutdown. If the requirement is "no gaps" (invoice numbers in some jurisdictions), you need a serialized counter
+      table, not a sequence.
+    </p>
+  </Callout>
+
+  <h2 id="partitioning">Partitioning tables and indexes</h2>
+  <p>
+    Partitioning splits one table into ranges by a column — almost always a date — using a <strong>partition
+    function</strong> (the boundaries) and a <strong>partition scheme</strong> (where each partition lives). Benefits are
+    manageability (truncate, switch, rebuild one partition) and partition elimination; it is not a substitute for
+    indexing. Indexes created on the same scheme are <strong>aligned</strong>, which partition switching requires.
+  </p>
+  <CodeBlock code={partition} />
+  <ul>
+    <li><code>RANGE RIGHT</code>: a boundary value belongs to the partition on its <em>right</em> — natural for dates.</li>
+    <li>A partitioned unique index must include the partitioning column in its key.</li>
+    <li>Sliding window: <code>SPLIT RANGE</code> to add a new boundary, <code>SWITCH</code> out the oldest partition, <code>MERGE RANGE</code> to remove it.</li>
+  </ul>
+
+  <h2 id="programmability-objects">Programmability objects</h2>
+  <div class="table-wrap">
+    <table class="tbl t-purple">
+      <thead><tr><th>Object</th><th>Use it for</th><th>Know this</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>View</td>
+          <td>Encapsulating a query, simplifying permissions, a stable contract over changing tables</td>
+          <td><code>WITH SCHEMABINDING</code> blocks changes to underlying columns; <code>WITH CHECK OPTION</code> rejects writes that would fall outside the view; an <strong>indexed view</strong> needs SCHEMABINDING and a unique clustered index</td>
+        </tr>
+        <tr>
+          <td>Scalar function</td>
+          <td>A reusable expression returning one value</td>
+          <td>Called per row; <strong>scalar UDF inlining</strong> (compat 150+) rewrites eligible functions into the query; avoid data access inside them</td>
+        </tr>
+        <tr>
+          <td>Inline table-valued function</td>
+          <td>A parameterized view — a single <code>SELECT</code></td>
+          <td>Expanded into the calling query and optimized with it; the preferred TVF</td>
+        </tr>
+        <tr>
+          <td>Multi-statement TVF</td>
+          <td>Procedural logic that fills a <code>@table</code></td>
+          <td>Interleaved execution (compat 140+) fixes its old fixed cardinality guess, but it is still a black box to the optimizer</td>
+        </tr>
+        <tr>
+          <td>Stored procedure</td>
+          <td>Transactions, multiple statements, output parameters, a permission boundary</td>
+          <td><code>SET NOCOUNT ON</code>, <code>SET XACT_ABORT ON</code>, <code>TRY…CATCH</code> + <code>THROW</code>; ownership chaining lets callers run it without table permissions</td>
+        </tr>
+        <tr>
+          <td>DML trigger</td>
+          <td>Enforcing rules or auditing on <code>INSERT</code>/<code>UPDATE</code>/<code>DELETE</code></td>
+          <td>Fires <strong>once per statement</strong>; read <code>inserted</code> and <code>deleted</code> set-based; <code>INSTEAD OF</code> makes a multi-table view updatable</td>
+        </tr>
+        <tr>
+          <td>DDL trigger</td>
+          <td>Auditing or blocking schema changes</td>
+          <td>Database-scoped only in Azure SQL Database and Fabric; reads <code>EVENTDATA()</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={programmability} />
+  <CodeBlock code={trigger} />
+  <Callout type="syntax" title="Triggers that assume one row">
+    <p>
+      <code>SELECT @id = ProductID FROM inserted</code> silently handles only one arbitrary row of a multi-row update. The
+      exam's "fix the trigger" items are almost always this: rewrite it as a set-based <code>INSERT … SELECT</code> joining
+      <code>inserted</code> and <code>deleted</code>.
+    </p>
+  </Callout>
+
+  <h2 id="advanced-t-sql-at-a-glance">Advanced T-SQL at a glance</h2>
+  <p>
+    The outline names eight families. Each has worked examples in the
+    <a href={href('advanced-tsql-deep-dive')}>Advanced T-SQL deep dive</a>; this is the one-line summary of each.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Family</th><th>Reach for it when</th><th>Platform line</th></tr></thead>
+      <tbody>
+        <tr><td>CTEs</td><td>Naming a step, or walking a hierarchy recursively</td><td>All</td></tr>
+        <tr><td>Window functions</td><td>Ranking, running totals, previous/next row, top-n per group — without collapsing rows</td><td>All</td></tr>
+        <tr><td>JSON functions</td><td>Building JSON (<code>JSON_OBJECT</code>, <code>JSON_ARRAY</code>, <code>JSON_ARRAYAGG</code>) or reading it (<code>OPENJSON</code>, <code>JSON_VALUE</code>, <code>JSON_CONTAINS</code>)</td><td>Aggregates and <code>JSON_CONTAINS</code>: SQL Server 2025+, Azure SQL, Fabric</td></tr>
+        <tr><td>Regular expressions</td><td>Validating, extracting, replacing or splitting by pattern</td><td>SQL Server 2025+, Azure SQL, Fabric (GA)</td></tr>
+        <tr><td>Fuzzy matching</td><td>Typos and near-duplicates: <code>EDIT_DISTANCE</code>, <code>JARO_WINKLER_*</code></td><td>Preview everywhere</td></tr>
+        <tr><td>Graph <code>MATCH</code></td><td>Traversing node and edge tables, shortest paths</td><td>SQL Server 2017+, Azure SQL</td></tr>
+        <tr><td>Correlated queries</td><td>Per-row subqueries: <code>EXISTS</code>, <code>APPLY</code></td><td>All</td></tr>
+        <tr><td>Error handling</td><td><code>TRY…CATCH</code>, <code>THROW</code>, <code>XACT_STATE()</code></td><td>All</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="ai-assisted-tools">SQL solutions with AI-assisted tools</h2>
+  <p>
+    The exam covers two assistant families — <strong>GitHub Copilot</strong> (in VS Code with the MSSQL extension, in
+    Visual Studio and in SSMS 22) and <strong>Copilot in Fabric</strong> (in the SQL database query editor) — and how to
+    give them real context safely: a chosen model, instruction files and MCP tools.
+  </p>
+  <Mermaid code={copilotStack} caption="A Copilot chat session combines the model you pick, the instruction files it reads and the MCP tools you allow. Each MCP server on the right reaches the database with its own identity and permissions." />
+
+  <h3 id="security-impact-of-ai-assisted-tools">Security impact</h3>
+  <ul>
+    <li>
+      <strong>What leaves your machine:</strong> the prompt, the code being edited, content from open files and — when
+      connected — schema information. Prompts and responses are not used to train the models, and traffic is encrypted.
+    </li>
+    <li>
+      <strong>Data classification and compliance:</strong> check whether policy allows AI assistance on databases holding
+      PII, financial or health data, and whether schema is itself considered confidential.
+    </li>
+    <li>
+      <strong>Credentials:</strong> never paste passwords or connection strings into prompts or commit them in
+      <code>mcp.json</code>; use input prompts (<code>${'{'}input:…{'}'}</code>), environment variables or a secret store.
+    </li>
+    <li>
+      <strong>Least privilege for MCP:</strong> a dedicated identity per MCP server, read-only and schema-only where that
+      is all the workflow needs, and dev or test databases — not production — for routine work.
+    </li>
+    <li>
+      <strong>Review every suggestion:</strong> check generated <code>GRANT</code> statements, dynamic SQL (parameterized
+      <code>sp_executesql</code>, never concatenation) and views that expose more columns than intended.
+    </li>
+    <li>
+      <strong>Approvals:</strong> agent mode asks before each tool call; "always allow" removes that safeguard for the
+      tool, so grant it only for read-only tools.
+    </li>
+  </ul>
+
+  <h3 id="enable-github-copilot-and-copilot-in-fabric">Enable GitHub Copilot and Copilot in Fabric</h3>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead><tr><th>Assistant</th><th>Prerequisites</th><th>How it is switched on</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>GitHub Copilot in SSMS 22</td>
+          <td>A GitHub account with a Copilot plan (Free, Pro, Business or Enterprise)</td>
+          <td>Visual Studio Installer → Modify SSMS → <strong>AI Assistance</strong> workload; then sign in from the Copilot badge</td>
+        </tr>
+        <tr>
+          <td>GitHub Copilot in VS Code</td>
+          <td>The same Copilot plan, plus the MSSQL extension for database context</td>
+          <td>Install Copilot and sign in; right-click a connected database → <strong>Chat with this database</strong>, or use <code>@mssql</code></td>
+        </tr>
+        <tr>
+          <td>Copilot in Fabric</td>
+          <td>A paid Fabric capacity (F2 or higher) or Power BI Premium (P1 or higher)</td>
+          <td>Fabric admin portal → tenant setting <strong>Users can use Copilot and other features powered by Azure OpenAI</strong>, scoped to security groups; then the Copilot button in the SQL database query editor</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <Callout type="note" title="Organization policies decide what users can switch on">
+    <p>
+      For Copilot Business and Enterprise, organization and enterprise owners control policies such as which models are
+      available, whether MCP servers may be used, and whether suggestions matching public code are allowed. A developer
+      who cannot see a model or an MCP option in the picker is usually blocked by policy, not by the IDE.
+    </p>
+  </Callout>
+
+  <h3 id="models-and-mcp-tools-in-a-chat-session">Models and MCP tools in a chat session</h3>
+  <ul>
+    <li><strong>Model picker:</strong> choose a stronger reasoning model for design and optimization, a faster one for routine completions.</li>
+    <li>
+      <strong>Modes:</strong> <em>ask</em> for a single answer, <em>edit</em> for changes across files, <em>agent</em> for
+      multi-step work that calls tools, <em>plan</em> to produce a written plan before any DDL.
+    </li>
+    <li>
+      <strong>Tools picker</strong> (agent mode): lists every MCP server and extension tool; enable only what the task
+      needs. The MSSQL extension contributes tools such as <code>connect</code>, <code>list_databases</code> and
+      <code>run_query</code> automatically — no <code>@mssql</code> mention needed in agent mode.
+    </li>
+    <li>
+      <strong>Schema awareness:</strong> the <code>@mssql</code> participant and agent tools see your connected schema;
+      <strong>inline completions do not</strong>.
+    </li>
+    <li>
+      <strong>Copilot in Fabric</strong> already has the workspace's context; to use a Fabric <em>data agent</em> from
+      outside Fabric, publish it and copy its <strong>MCP server URL</strong> from Settings → Model Context Protocol.
+    </li>
+  </ul>
+
+  <h3 id="copilot-instruction-files">Copilot instruction files</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>File</th><th>Scope</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><code>.github/copilot-instructions.md</code></td><td>Every request in the repository</td><td>Plain Markdown; the team's conventions</td></tr>
+        <tr><td><code>.github/instructions/NAME.instructions.md</code></td><td>Files matching <code>applyTo</code> globs</td><td>YAML frontmatter; combined with the repository-wide file when both apply</td></tr>
+        <tr><td><code>AGENTS.md</code></td><td>Agents; the nearest file in the tree wins</td><td>Can sit in any folder</td></tr>
+        <tr><td><code>.github/prompts/NAME.prompt.md</code></td><td>A reusable task, run on demand</td><td>Invoked as <code>/NAME</code> in chat; inputs use <code>${'{'}input:name{'}'}</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={instructions} lang="markdown" label="copilot-instructions.md" />
+  <CodeBlock code={pathInstr} lang="markdown" label="tsql.instructions.md" />
+  <p>
+    Good instructions are specific (exact naming patterns, not "use good names"), give an example of the preferred pattern
+    and put the most important rules first. Full samples, including a prompt file, are in the
+    <a href={`${href('config-reference')}#github-copilot-instruction-files`}>Configuration reference</a>.
+  </p>
+
+  <h3 id="connect-to-mcp-server-endpoints">Connect to MCP server endpoints</h3>
+  <div class="table-wrap">
+    <table class="tbl t-slate">
+      <thead><tr><th>Target</th><th>MCP option</th><th>How you connect</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>SQL Server, Azure SQL, SQL database in Fabric</td>
+          <td>MSSQL extension tools</td>
+          <td>Built in: connect in the extension and use agent mode — no separate server to configure</td>
+        </tr>
+        <tr>
+          <td>SQL Server, Azure SQL, SQL database in Fabric</td>
+          <td><strong>SQL MCP Server</strong> (Data API builder 2.x)</td>
+          <td>Enable <code>runtime.mcp</code> in <code>dab-config.json</code>, run <code>dab start</code>, then add the <code>/mcp</code> URL (HTTP) or run DAB with <code>--mcp-stdio</code></td>
+        </tr>
+        <tr>
+          <td>Fabric lakehouse, warehouse, semantic model</td>
+          <td>Fabric <strong>data agent</strong> published as an MCP server</td>
+          <td>Publish the data agent, copy the MCP server URL, add it as an HTTP server; sign in with Entra ID</td>
+        </tr>
+        <tr>
+          <td>Azure resources broadly</td>
+          <td>Azure MCP Server</td>
+          <td>Install it, sign in to Azure, then use agent mode</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    In VS Code, add servers with <strong>MCP: Add Server</strong> or by editing <code>.vscode/mcp.json</code>, then check in
+    agent mode's tools picker that the server is running and its tools are listed. Troubleshooting follows the usual
+    order: JSON syntax (server missing), expired sign-in (authentication failed), firewall (timeout), permissions (empty
+    schema).
+  </p>
+  <Callout type="tip" title="SQL MCP Server tools are generated from configuration">
+    <p>
+      SQL MCP Server exposes seven DML tools — <code>describe_entities</code>, <code>create_record</code>,
+      <code>read_records</code>, <code>update_record</code>, <code>delete_record</code>, <code>execute_entity</code> and
+      <code>aggregate_records</code> — and only for entities and roles your <code>dab-config.json</code> allows. Agents
+      never see raw SQL access, so DAB permissions are the guardrail. Turning <code>delete-record</code> off globally is a
+      common production setting.
+    </p>
+  </Callout>
+</NoteLayout>

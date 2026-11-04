@@ -1,0 +1,343 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import AppliesTo from '../../components/AppliesTo.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const platforms = `
+flowchart TB
+  subgraph ENGINE["One SQL Database Engine"]
+    SS["SQL Server 2025 · 17.x<br/>you run it: Windows · Linux · containers · Azure VM · Arc"]
+    subgraph AZ["Azure SQL · PaaS"]
+      DB["Azure SQL Database<br/>versionless · database-scoped"] ~~~ MI["Azure SQL Managed Instance<br/>instance-scoped · update policy"]
+    end
+    FAB["SQL database in Fabric<br/>SaaS · auto-mirrored to OneLake"]
+  end
+`;
+
+const previewOn = `-- SQL Server 2025 only: opt a database in to preview features
+-- (vector indexes, VECTOR_SEARCH, fuzzy matching, change event streaming,
+-- half-precision vectors). Not needed in Azure SQL Database or Fabric.
+ALTER DATABASE SCOPED CONFIGURATION SET PREVIEW_FEATURES = ON;
+
+-- Several new functions are only visible at compatibility level 170
+-- (AI_GENERATE_CHUNKS, for example). 170 is already the default in Azure SQL
+-- Database and SQL database in Fabric; on SQL Server it follows the database.
+ALTER DATABASE CURRENT SET COMPATIBILITY_LEVEL = 170;
+
+-- SQL Server 2025 and Azure SQL MI: allow outbound REST calls
+-- (sp_invoke_external_rest_endpoint, external models). On by default in
+-- Azure SQL Database and SQL database in Fabric.
+EXECUTE sp_configure 'external rest endpoint enabled', 1;
+RECONFIGURE WITH OVERRIDE;`;
+---
+
+<NoteLayout
+  slug="sql-foundations"
+  description="The three Microsoft SQL platforms DP-800 spans — SQL Server 2025, Azure SQL Database and Managed Instance, and SQL database in Fabric — the developer tooling, and a feature-by-platform availability matrix with GA and preview status."
+  intro="DP-800 is written for one engine that runs in three places. Most of the exam's traps are not about what a feature does but about where it exists and whether it is still in preview — so learn the platforms, the switches that turn features on, and the tools you build with before the skills."
+>
+  <h2 id="one-engine-three-platforms">One engine, three platforms</h2>
+  <p>
+    SQL Server, Azure SQL and SQL database in Fabric share one code base — the <strong>SQL Database Engine</strong>.
+    The T-SQL is the same; what differs is <strong>who runs the engine</strong>, <strong>how new features reach
+    it</strong> and <strong>which features are switched off</strong> by the platform. Every T-SQL reference page carries an
+    <em>Applies to</em> banner listing the platforms; these notes copy that habit with a strip like the one below.
+  </p>
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Example strip: a feature that is generally available on all four." />
+  <Mermaid
+    code={platforms}
+    caption="Azure SQL is a family of two PaaS services; SQL database in Fabric is a SaaS item in a Fabric workspace. All four run the same engine, so a T-SQL sample usually works everywhere unless a banner says otherwise."
+  />
+
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th></th><th>SQL Server 2025</th><th>Azure SQL Database</th><th>Azure SQL MI</th><th>SQL database in Fabric</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Model</td>
+          <td>Software you install and patch (17.x, cumulative updates)</td>
+          <td>PaaS, a single database or elastic pool; versionless</td>
+          <td>PaaS, a near-complete SQL Server instance in a VNet</td>
+          <td>SaaS item in a Fabric workspace, billed from capacity</td>
+        </tr>
+        <tr>
+          <td>How features arrive</td>
+          <td>GA at release or in a CU; previews behind <code>PREVIEW_FEATURES</code></td>
+          <td>Continuously, as soon as they ship</td>
+          <td>Depends on the instance's <strong>update policy</strong></td>
+          <td>Continuously, shares Azure SQL Database's code line</td>
+        </tr>
+        <tr>
+          <td>Authentication</td>
+          <td>Windows, SQL logins, Entra ID (via Azure Arc)</td>
+          <td>Entra ID and SQL authentication</td>
+          <td>Entra ID, SQL and Windows (Kerberos via Entra)</td>
+          <td><strong>Entra ID only</strong> — no logins, only Entra users</td>
+        </tr>
+        <tr>
+          <td>Scope</td>
+          <td>Instance, many databases, SQL Agent, server-level config</td>
+          <td>Database; no SQL Agent, no cross-database queries</td>
+          <td>Instance; SQL Agent, cross-database queries, CLR</td>
+          <td>Database; no SQL Agent, Data Factory pipelines instead</td>
+        </tr>
+        <tr>
+          <td>Default compatibility</td>
+          <td>Set per database (170 for new 17.x databases)</td>
+          <td>170</td>
+          <td>Per database</td>
+          <td>170</td>
+        </tr>
+        <tr>
+          <td>Exam cue</td>
+          <td>"on-premises", "Azure Arc", "Linux container", "Standard edition"</td>
+          <td>"serverless", "Hyperscale", "elastic pool", "Query Performance Insight"</td>
+          <td>"lift and shift", "SQL Agent jobs", "update policy"</td>
+          <td>"workspace", "OneLake", "SQL analytics endpoint", "capacity"</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <Callout type="note" title="SQL Server 2025 editions">
+    <p>
+    SQL Server 2025 adds two free development editions — <strong>Standard Developer</strong> and
+    <strong>Enterprise Developer</strong> — so you can develop against exactly the features of the edition you will
+    deploy. Standard edition's limits rise to 32 cores and 256 GB of buffer pool, and Web edition is discontinued.
+    </p>
+  </Callout>
+
+  <h2 id="managed-instance-update-policies">Managed Instance update policies</h2>
+  <p>
+    An Azure SQL Managed Instance is pinned to an <strong>update policy</strong> that decides which engine features it
+    receives. This is the single most common reason a DP-800 answer says "MI: yes, but…".
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead><tr><th>Update policy</th><th>What it gives you</th><th>Use it when</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>SQL Server 2022</td>
+          <td>The SQL Server 2022 feature set; databases can be restored to SQL Server 2022</td>
+          <td>You need two-way portability with SQL Server 2022</td>
+        </tr>
+        <tr>
+          <td>SQL Server 2025</td>
+          <td>
+            The SQL Server 2025 feature set: JSON type and JSON aggregates, regex, vector type and functions,
+            <code>sp_invoke_external_rest_endpoint</code>, optimized locking; vector indexes,
+            <code>VECTOR_SEARCH</code>, fuzzy matching and CES as <strong>preview</strong>
+          </td>
+          <td>You need parity — and a restore path — with SQL Server 2025</td>
+        </tr>
+        <tr>
+          <td>Always-up-to-date</td>
+          <td>
+            Every engine feature as soon as it ships, including GA vector indexes and <code>VECTOR_SEARCH</code>,
+            <code>CREATE EXTERNAL MODEL</code> and the AI functions
+          </td>
+          <td>You want the newest engine and do not need to restore back to a boxed SQL Server version</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <Callout type="exam" title="Read the MI line in every Applies-to banner">
+    <p>
+      Several reference pages say a feature is "available in Azure SQL Managed Instance with the <strong>Always-up-to-date</strong>
+      update policy" — <code>CREATE EXTERNAL MODEL</code> and <code>AI_GENERATE_EMBEDDINGS</code> among them — while others
+      accept either the <strong>SQL Server 2025</strong> or the Always-up-to-date policy. If a scenario's MI runs the SQL
+      Server 2022 policy, none of the SQL Server 2025 programmability is there.
+    </p>
+  </Callout>
+
+  <h2 id="sql-database-in-fabric">SQL database in Fabric</h2>
+  <p>
+    SQL database in Microsoft Fabric is an operational (OLTP) database created as an item in a Fabric workspace. It
+    shares Azure SQL Database's engine and adds Fabric's integration: every eligible table is <strong>automatically
+    mirrored to OneLake</strong> in Delta format, a <strong>read-only SQL analytics endpoint</strong> is created alongside
+    it, and the workspace's <strong>Git integration and deployment pipelines</strong> cover its schema.
+  </p>
+  <ul>
+    <li><strong>Identity:</strong> Microsoft Entra only. Workspace roles grant access, and SQL permissions refine it.</li>
+    <li>
+      <strong>Not supported today:</strong> Always Encrypted, ledger tables, in-memory (memory-optimized) tables, change
+      data capture, application roles, server-level roles, <code>EXECUTE AS</code>, SQL Agent, partition switching.
+    </li>
+    <li>
+      <strong>Supported with differences:</strong> full-text search (preview), external tables (Parquet and CSV only),
+      auditing (written to the item's OneLake folder and read with <code>sys.fn_get_audit_file_v2</code>), clustered
+      columnstore (create it with the table, or stop mirroring first).
+    </li>
+    <li><strong>Limits:</strong> up to 32 vCores and 4 TB; a trial capacity is limited to three databases.</li>
+  </ul>
+  <Callout type="warn" title="Not the Warehouse, not the SQL analytics endpoint">
+    <p>
+      Fabric has three SQL surfaces. <strong>SQL database</strong> is the read-write OLTP engine this exam is about.
+      The <strong>Warehouse</strong> is the analytical engine (DP-700/DP-600 territory), and a <strong>SQL analytics
+      endpoint</strong> is the read-only T-SQL view over a lakehouse or a mirrored database. A function that "applies to
+      SQL analytics endpoint and Warehouse" is not automatically available in SQL database, and vice versa.
+    </p>
+  </Callout>
+
+  <h2 id="which-feature-exists-where">Which feature exists where</h2>
+  <p>
+    The matrix below is the exam's platform line for every feature the skills outline names. <span class="pill p-green">GA</span>
+    is generally available, <span class="pill p-amber">Preview</span> is in preview (and on SQL Server 2025 needs
+    <code>PREVIEW_FEATURES</code>), and <span class="pill p-gray">No</span> is not available. "MI" assumes an update
+    policy that carries the feature, noted where it matters.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead>
+        <tr><th>Feature</th><th>SQL Server 2025</th><th>Azure SQL Database</th><th>Azure SQL MI</th><th>SQL database in Fabric</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>vector</code> type and vector functions</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> 2025 / AUTD</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Vector index (DiskANN) and <code>VECTOR_SEARCH</code></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> AUTD · <span class="pill p-amber">Preview</span> 2025</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Half-precision vectors, <code>vector(n, float16)</code></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td><code>CREATE EXTERNAL MODEL</code>, <code>AI_GENERATE_EMBEDDINGS</code></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> AUTD only</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td><code>AI_GENERATE_CHUNKS</code> (compat 170)</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> 2025 / AUTD</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td><code>sp_invoke_external_rest_endpoint</code></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> 2025 / AUTD</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Regular expressions (<code>REGEXP_*</code>)</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> 2025 / AUTD</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Fuzzy matching (<code>EDIT_DISTANCE</code>, <code>JARO_WINKLER_*</code>)</td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td></tr>
+        <tr><td><code>json</code> type, JSON index, <code>JSON_CONTAINS</code></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> 2025 / AUTD</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Change event streaming (CES)</td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td><td><span class="pill p-amber">Preview</span></td></tr>
+        <tr><td>Change data capture (CDC)</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> S3 and above</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-gray">No</span></td></tr>
+        <tr><td>Ledger tables</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-gray">No</span></td></tr>
+        <tr><td>In-memory OLTP</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> Premium / Business Critical</td><td><span class="pill p-green">GA</span> Business Critical</td><td><span class="pill p-gray">No</span></td></tr>
+        <tr><td>Always Encrypted</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-gray">No</span></td></tr>
+        <tr><td>Dynamic data masking, RLS, temporal tables</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Full-text search</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-amber">Preview</span></td></tr>
+        <tr><td>Optimized locking</td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-green">GA</span> 2025 / AUTD</td><td><span class="pill p-green">GA</span></td></tr>
+        <tr><td>Query Performance Insight</td><td><span class="pill p-gray">No</span></td><td><span class="pill p-green">GA</span></td><td><span class="pill p-gray">No</span></td><td><span class="pill p-gray">No</span> — Performance Dashboard</td></tr>
+        <tr><td>Auditing</td><td>SQL Server Audit</td><td>Azure SQL auditing</td><td>SQL Server Audit (to Blob)</td><td>Fabric SQL auditing to OneLake</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="wr-note">
+    AUTD is the Always-up-to-date update policy; "2025" is the SQL Server 2025 update policy. Statuses checked against
+    the live documentation in November 2026 — previews graduate in cumulative updates and service releases, so check the
+    banner on the reference page before relying on one.
+  </p>
+
+  <h2 id="switching-features-on">Switching features on</h2>
+  <p>
+    Three switches explain most "the function does not exist" and "the feature is disabled" errors in exam scenarios.
+    Each applies to some platforms only.
+  </p>
+  <CodeBlock code={previewOn} label="T-SQL · SQL Server 2025" />
+  <dl class="terms">
+    <dt><code>PREVIEW_FEATURES</code> (database scoped configuration)</dt>
+    <dd>
+      SQL Server 2025 only. Enabling it does not make the database "non-GA"; a preview that later goes GA in a
+      cumulative update simply stops needing it. Persisted preview objects (a vector index) can fail if you switch it
+      off again.
+    </dd>
+    <dt>Compatibility level 170</dt>
+    <dd>Required by some new functions — the engine cannot even find <code>AI_GENERATE_CHUNKS</code> below 170.</dd>
+    <dt><code>external rest endpoint enabled</code> (<code>sp_configure</code>)</dt>
+    <dd>
+      Gates <code>sp_invoke_external_rest_endpoint</code> and therefore every external-model call. Must be enabled on SQL
+      Server 2025 and Managed Instance; already on in Azure SQL Database and SQL database in Fabric.
+    </dd>
+  </dl>
+
+  <h2 id="the-developer-tooling">The developer tooling</h2>
+  <p>The exam names its tools. Know what each one is for, and which skill uses it.</p>
+  <div class="table-wrap">
+    <table class="tbl t-purple">
+      <thead><tr><th>Tool</th><th>What it does</th><th>Where it shows up</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>SQL Server Management Studio (SSMS 22)</td>
+          <td>
+            The administration and query IDE. <strong>GitHub Copilot in SSMS</strong> adds chat with database context,
+            slash commands such as <code>/doc</code> to document, explain, fix or optimize T-SQL, code completions (22.2+)
+            and agent mode extensible with agent skills and MCP servers (22.7+).
+          </td>
+          <td>Skill 1 (AI-assisted tools), Skill 2 (plans, Query Store)</td>
+        </tr>
+        <tr>
+          <td>MSSQL extension for VS Code</td>
+          <td>
+            Connections, query editor, Schema Designer, SQL Database Projects and a Data API builder designer. Its GitHub
+            Copilot integration contributes the schema-aware <code>@mssql</code> chat participant and agent-mode tools
+            (<code>connect</code>, <code>list_databases</code>, <code>run_query</code>…); inline completions are
+            <strong>not</strong> schema-aware.
+          </td>
+          <td>Skill 1, Skill 2 (projects, DAB)</td>
+        </tr>
+        <tr>
+          <td>SQL Database Projects (<code>Microsoft.Build.Sql</code>)</td>
+          <td>
+            Database schema as source code in an SDK-style <code>.sqlproj</code>; <code>dotnet build</code> validates it
+            and produces a <code>.dacpac</code>.
+          </td>
+          <td>Skill 2 (CI/CD), <a href={href('config-reference')}>Configuration reference</a></td>
+        </tr>
+        <tr>
+          <td>SqlPackage</td>
+          <td>Publishes a <code>.dacpac</code> to a database, extracts one from it, and reports a deployment or drift.</td>
+          <td>Skill 2 (deploy, schema drift)</td>
+        </tr>
+        <tr>
+          <td>Data API builder (DAB 2.x)</td>
+          <td>
+            Configuration-driven REST, GraphQL and — as <strong>SQL MCP Server</strong> — MCP endpoints over tables, views
+            and stored procedures, from one <code>dab-config.json</code>.
+          </td>
+          <td>Skill 2 (integration, securing endpoints), Skill 1 (MCP)</td>
+        </tr>
+        <tr>
+          <td>GitHub Copilot</td>
+          <td>
+            AI pair programmer in VS Code, Visual Studio, SSMS and GitHub; chat modes (ask, edit, agent, plan), model
+            choice, MCP tools and repository instruction files.
+          </td>
+          <td>Skill 1 (AI-assisted tools)</td>
+        </tr>
+        <tr>
+          <td>Copilot in Fabric</td>
+          <td>
+            Copilot for SQL database in Fabric: a chat pane, code completions and quick actions to fix and explain queries
+            in the Fabric query editor. Enabled by tenant settings on a paid capacity.
+          </td>
+          <td>Skill 1 (AI-assisted tools)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="names-to-keep-straight">Names to keep straight</h2>
+  <dl class="terms">
+    <dt>Microsoft Foundry (formerly Azure AI Foundry)</dt>
+    <dd>
+      The platform for deploying models such as Azure OpenAI embeddings and chat models. The study guide uses the new
+      name; many SQL pages still say "Azure OpenAI in Azure AI Foundry Models", and the old portal is "Foundry (classic)".
+    </dd>
+    <dt>SQL database in Microsoft Fabric</dt>
+    <dd>Sometimes shortened to "Fabric SQL database" in the docs. Not the Warehouse and not a SQL analytics endpoint.</dd>
+    <dt>SQL MCP Server</dt>
+    <dd>Data API builder's MCP surface, available from DAB 1.7 and fully featured in DAB 2.0 and later.</dd>
+    <dt>SQL Server 2025 = 17.x</dt>
+    <dd>SQL Server 2022 is 16.x. The compatibility level that unlocks the newest functions is 170.</dd>
+    <dt>ANN and ENN (also kNN)</dt>
+    <dd>
+      Approximate nearest neighbours (a vector index, <code>VECTOR_SEARCH</code>) versus exact nearest neighbours
+      (<code>VECTOR_DISTANCE</code> over every row). Skill 3 covers when to choose each.
+    </dd>
+  </dl>
+
+  <Callout type="tip" title="A free lab for every skill">
+    <p>
+      An Azure SQL Database on the free offer, or a SQL database in a Fabric trial capacity, runs every GA feature on this
+      page without the preview switch. Use SQL Server 2025 Developer edition in a container when you want to practise the
+      <code>PREVIEW_FEATURES</code> path and the <code>sp_configure</code> switches the cloud platforms hide.
+    </p>
+  </Callout>
+</NoteLayout>

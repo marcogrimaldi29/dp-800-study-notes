@@ -1,0 +1,1306 @@
+/* =====================================================================
+   DP-800 Study Notes — Microsoft Fabric look and feel
+   Author: Marco Grimaldi (marcogrimaldi29.com)
+
+   The visual language is Microsoft Fabric's, as on the DP-700 v2 notes:
+   Fluent 2, Segoe UI, Microsoft blue with Fabric teal and cyan, a gradient
+   hero, soft rounded cards and three shadow steps. The structure and the
+   behaviour — the foldable rail and drawer, the "On this page" outline,
+   search, deep links, the floating controls and the animated background —
+   come from the GH-600 build.
+
+   Colour tokens are declared once on :root (light, the Fabric default) and
+   redefined on html[data-theme="dark"], so every component is written against
+   the semantic names and follows the theme switcher.
+   ===================================================================== */
+
+:root {
+  /* --- Microsoft / Fabric palette ------------------------------------- */
+  --ms-blue: #0f6cbd;
+  --ms-blue-dark: #10508f;
+  --ms-blue-darker: #0b3d6e;
+  --ms-blue-light: #4a9ae0;
+  --fabric-teal: #0d7d72;
+  --fabric-cyan: #00b7c3;
+  --ms-purple: #5c2d91;
+  --ms-green: #107c10;
+  --ms-amber: #ffb900;
+  --ms-orange: #d83b01;
+  --ms-red: #d13438;
+
+  /* Text-safe variants of the palette for titles on tinted backgrounds. */
+  --amber-text: #946200;
+  --purple-text: #5c2d91;
+  --green-text: #107c10;
+  --orange-text: #c23400;
+  --teal-text: #0d7d72;
+
+  /* --- Fabric light surfaces ------------------------------------------ */
+  --bg: #f3f6fb;
+  --bg-grad-1: #eaf4f6;
+  --bg-grad-2: #f7f9fc;
+  --surface: #ffffff;
+  --surface-2: #f6f9fd;
+  --surface-3: #eef3f9;
+  --border: #e1e6ee;
+  --border-strong: #cdd6e4;
+  --text: #1b1f27;
+  --text-soft: #4a5160;
+  --text-muted: #6a7180;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, .08), 0 2px 4px rgba(16, 24, 40, .04);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, .12);
+  --backdrop: rgba(16, 24, 40, .4);
+  --header-bg: color-mix(in srgb, var(--surface) 86%, transparent);
+  --code-bg: var(--surface-2);
+  --cloud-opacity: .09;
+  --rain-opacity: .045;
+
+  /* --- Page accents (mirrors src/data/site.ts) ------------------------ */
+  /* One per page, for its page head, markers and bars. Blue stays primary. */
+  --s0: #0f6cbd;   /* Home & Foundations       */
+  --s1: #5c2d91;   /* Skill 1 Design & develop */
+  --s2: #0d7d72;   /* Skill 2 Secure & deploy  */
+  --s3: #d83b01;   /* Skill 3 AI capabilities  */
+  --s4: #c2255c;   /* Advanced T-SQL           */
+  --s5: #0e8ba8;   /* Vectors & RAG            */
+  --s6: #0f6cbd;   /* Configuration reference  */
+  --s7: #b38600;   /* Exam tips                */
+
+  /* --- Shape and rhythm ----------------------------------------------- */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-hero: 18px;
+  --maxw: 1400px;
+  --header-h: 60px;
+  --sidebar-w: 304px;
+  --sidebar-w-collapsed: 60px;
+  --aside-w: 232px;
+  /* Inset of the navigation drawer from the viewport edges, which is what lets
+     its rounded corners read as the same card as the docked rail. */
+  --drawer-gap: 12px;
+
+  --font: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+
+  /* Fluent-quick interactions: one shared timing for every hover. */
+  --fast: .18s;
+  --ease: cubic-bezier(.33, 1, .68, 1);
+}
+
+html[data-theme="dark"] {
+  --bg: #0b0f17;
+  --bg-grad-1: #0c1620;
+  --bg-grad-2: #0a0e16;
+  --surface: #141a25;
+  --surface-2: #1a2230;
+  --surface-3: #212b3b;
+  --border: #283142;
+  --border-strong: #364254;
+  --text: #e8edf5;
+  --text-soft: #b4bdcc;
+  --text-muted: #8590a3;
+
+  --ms-blue: #3d9ae8;
+  --ms-blue-light: #6bb4ef;
+
+  --amber-text: #ffb900;
+  --purple-text: #c79bf0;
+  --green-text: #54b054;
+  --orange-text: #ff7a45;
+  --teal-text: #2aa89b;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, .45);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, .55);
+  --backdrop: rgba(0, 0, 0, .6);
+  --code-bg: var(--surface);
+  --cloud-opacity: .07;
+  --rain-opacity: .035;
+
+  --s0: #3d9ae8;
+  --s1: #a37bd6;
+  --s2: #2aa89b;
+  --s3: #ff7a45;
+  --s4: #e64980;
+  --s5: #22b8cf;
+  --s6: #3d9ae8;
+  --s7: #e0a800;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--header-h) + 18px);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* The Fabric wash: two offset radial gradients over the canvas. */
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--text);
+  background:
+    radial-gradient(1200px 600px at 100% -10%, var(--bg-grad-1), transparent 60%),
+    radial-gradient(900px 500px at -10% 10%, var(--bg-grad-2), transparent 55%),
+    var(--bg);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+a { color: var(--ms-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+img { max-width: 100%; }
+
+/* Fluent's focus ring: a solid brand outline, always visible on keyboard focus. */
+:focus-visible {
+  outline: 2px solid var(--ms-blue);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Skip link for keyboard and screen-reader users. */
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 300;
+  background: var(--surface); color: var(--text); font-weight: 600;
+  padding: 10px 16px; border: 2px solid var(--ms-blue); border-radius: 0 0 var(--radius-sm) 0;
+}
+.skip-link:focus { left: 0; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+/* Fluent icons inherit the text colour, as inside Fluent controls. */
+.fluent-icon { flex: none; display: inline-block; vertical-align: -.2em; }
+
+/* Thin scrollbars in the theme's border greys. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ===================== Background: clouds and code rain ===================== */
+/* Slow, blurred clouds in Microsoft blue, Fabric teal and cyan, and a barely
+   visible rain of tokens from the exam's vocabulary, both far behind the content. */
+.bg-animation, .code-rain {
+  position: fixed; inset: 0; z-index: -1;
+  overflow: hidden; pointer-events: none;
+}
+.bg-animation .cloud {
+  position: absolute; border-radius: 50%;
+  filter: blur(80px); opacity: var(--cloud-opacity);
+  animation: float-cloud 25s ease-in-out infinite alternate;
+}
+.bg-animation .cloud:nth-child(1) { width: 520px; height: 300px; background: var(--ms-blue); top: 10%; left: -5%; animation-duration: 30s; }
+.bg-animation .cloud:nth-child(2) { width: 420px; height: 260px; background: var(--fabric-teal); top: 50%; right: -5%; animation-duration: 22s; animation-delay: -5s; }
+.bg-animation .cloud:nth-child(3) { width: 360px; height: 210px; background: var(--fabric-cyan); bottom: 8%; left: 30%; animation-duration: 28s; animation-delay: -10s; }
+@keyframes float-cloud {
+  0%   { transform: translate(0, 0) scale(1); }
+  50%  { transform: translate(20px, -30px) scale(1.1); }
+  100% { transform: translate(-15px, 10px) scale(.95); }
+}
+
+.code-rain {
+  opacity: var(--rain-opacity);
+  font-family: var(--mono); font-size: 14px;
+  color: var(--ms-blue);
+}
+.code-rain .rain-col {
+  position: absolute; top: 0;
+  writing-mode: vertical-rl; white-space: nowrap;
+  animation: code-rain linear infinite;
+}
+@keyframes code-rain {
+  from { transform: translateY(-100%); }
+  to   { transform: translateY(100vh); }
+}
+
+/* ===================== Header ===================== */
+.site-header {
+  position: sticky; top: 0; z-index: 100;
+  height: var(--header-h);
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 22px;
+  background: var(--header-bg);
+  backdrop-filter: saturate(160%) blur(12px);
+  -webkit-backdrop-filter: saturate(160%) blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+/* The wordmark never shrinks, wraps or clips: everything else in the bar gives
+   way first. flex: none stops the flex algorithm from quietly squeezing it. */
+.brand {
+  display: flex; align-items: center; gap: 11px; flex: none;
+  font-size: 16px; font-weight: 700; color: var(--text); white-space: nowrap;
+}
+.brand img { width: 30px; height: 30px; object-fit: contain; flex: none; }
+.brand:hover { text-decoration: none; }
+.brand .brand-lead { font-weight: 700; color: var(--text); }
+.brand .brand-rest { font-weight: 600; color: var(--text-muted); }
+
+.header-tools { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: none; }
+
+/* Fluent 2 bordered icon button: on hover a surface-3 fill, blue text and the
+   stronger border. */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; padding: 0; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-soft); cursor: pointer;
+  transition: background var(--fast), color var(--fast), border-color var(--fast);
+}
+.icon-btn:hover { background: var(--surface-3); color: var(--ms-blue); border-color: var(--border-strong); }
+
+/* The Star link: Fluent Star, "on" and the GitHub mark. It takes an amber
+   border on hover, echoing the footer's amber star call to action. */
+.ghub-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-soft); font-size: 14px; font-weight: 600; white-space: nowrap;
+  transition: background var(--fast), border-color var(--fast), color var(--fast);
+}
+.ghub-link:hover { background: var(--surface-3); border-color: var(--ms-amber); color: var(--text); text-decoration: none; }
+.ghub-link .ghub-star { color: var(--amber-text); }
+.ghub-link .ghub-mark { width: 16px; height: 16px; flex: none; display: block; }
+
+/* Shown only once the rail turns into a drawer. */
+.sidebar-open { display: none; }
+
+/* ===================== Search (Fluent 2 dialog) ===================== */
+.search-modal {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(70vh, 620px);
+  margin: 0 auto;
+  margin-top: clamp(40px, 10vh, 110px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.search-modal::backdrop { background: var(--backdrop); }
+.search-modal[open] { animation: sm-in .18s var(--ease); }
+@keyframes sm-in {
+  from { opacity: 0; transform: translateY(-6px) scale(.99); }
+  to   { opacity: 1; transform: none; }
+}
+
+.sm-inner { display: flex; flex-direction: column; max-height: inherit; }
+/* A Fluent SearchBox: a bordered field whose bottom edge turns brand blue on focus. */
+.sm-field {
+  display: flex; align-items: center; gap: 10px;
+  margin: 14px 14px 4px; padding: 0 10px;
+  height: 42px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong); border-bottom: 2px solid var(--border-strong);
+  background: var(--surface);
+  transition: border-color var(--fast);
+}
+.sm-field:focus-within { border-bottom-color: var(--ms-blue); }
+.sm-icon { color: var(--text-muted); }
+.sm-input {
+  flex: 1; min-width: 0; border: 0; background: none; outline: none;
+  font: inherit; font-size: 15px; color: var(--text);
+}
+.sm-input:focus-visible { outline: none; }
+.sm-input::placeholder { color: var(--text-muted); }
+.sm-input::-webkit-search-cancel-button { display: none; }
+.sm-close {
+  flex: none; font-family: var(--mono); font-size: 11px;
+  color: var(--text-soft); background: var(--surface-3);
+  border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; cursor: pointer;
+  transition: background var(--fast), color var(--fast);
+}
+.sm-close:hover { background: var(--border); color: var(--text); }
+
+.sm-status {
+  margin: 0; padding: 8px 18px 2px;
+  font-size: 12px; font-weight: 600; color: var(--text-muted);
+}
+.sm-results { list-style: none; margin: 0; padding: 6px 10px 10px; overflow-y: auto; scrollbar-width: thin; flex: 1; }
+.sm-hit + .sm-hit { margin-top: 2px; }
+.sm-hit a {
+  position: relative; display: block; padding: 9px 14px; border-radius: var(--radius-sm);
+  color: var(--text);
+  transition: background var(--fast);
+}
+.sm-hit a:hover { text-decoration: none; background: var(--surface-3); }
+.sm-hit.active a { background: color-mix(in srgb, var(--ms-blue) 10%, transparent); }
+.sm-hit.active a::before {
+  content: ""; position: absolute; left: 3px; top: 10px; bottom: 10px;
+  width: 3px; border-radius: 3px; background: var(--ms-blue);
+}
+.sm-crumb { display: block; font-size: 12px; font-weight: 600; color: var(--accent, var(--ms-blue)); margin-bottom: 1px; }
+.sm-title { display: block; font-weight: 600; font-size: 14px; line-height: 1.4; }
+.sm-snippet {
+  margin-top: 2px; font-size: 13px; line-height: 1.5; color: var(--text-soft);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.sm-results mark {
+  background: color-mix(in srgb, var(--ms-amber) 38%, transparent);
+  color: inherit; border-radius: 3px; padding: 0 1px;
+}
+.sm-foot {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  padding: 9px 18px; border-top: 1px solid var(--border);
+  font-size: 12px; color: var(--text-soft); background: var(--surface-2);
+}
+kbd {
+  font-family: var(--mono); font-size: 11px; padding: 1px 5px; margin-right: 3px;
+  border: 1px solid var(--border-strong); border-bottom-width: 2px;
+  border-radius: 5px; background: var(--surface); color: var(--text);
+}
+
+@media (max-width: 560px) {
+  .search-modal { margin-top: 12px; max-height: calc(100vh - 24px); }
+  .sm-foot { display: none; }
+}
+
+/* ===================== Theme toggle (sunrise to sun) ===================== */
+/* The mark is the site's sunrise logo: a half disc on the horizon with three
+   rays. Switching to light mode lifts the disc clear of the horizon, unclips
+   it into a full circle and fans out the remaining five rays. The sunrise
+   takes Fabric cyan; the full sun is a text-safe amber. */
+.theme-toggle .sun-icon { width: 20px; height: 20px; display: block; overflow: visible; }
+.theme-toggle .sun-icon .disc {
+  fill: var(--fabric-cyan);
+  cy: 16.4px;
+  transition: cy .45s var(--ease), fill .3s var(--ease);
+}
+.theme-toggle .sun-icon .clip-rect { height: 16.4px; transition: height .45s var(--ease); }
+/* In the sunrise state the disc sits low on the horizon, so the rays are pulled
+   in tight around the dome the way they are in the brand mark. Releasing this
+   transform lets them fan out to full radius for the sun. */
+.theme-toggle .sun-icon .rays {
+  /* Measured against the brand mark: there the rays start at ~1.26× and end at
+     ~1.6× the dome's radius. Scaling the full-sun rays by .864 about the icon
+     centre and moving that centre down onto the horizon (12 → 16.4) reproduces
+     those ratios around the 5.1-unit dome. */
+  transform: translateY(4.4px) scale(.864);
+  transform-origin: 12px 12px;
+  transition: transform .45s var(--ease);
+}
+.theme-toggle .sun-icon .ray {
+  stroke: var(--fabric-cyan); stroke-width: 2; stroke-linecap: round;
+  transform-origin: 12px 12px;
+  transition: opacity .35s var(--ease), transform .45s var(--ease), stroke .3s var(--ease);
+}
+.theme-toggle .sun-icon .ray.lower { opacity: 0; transform: scale(.35); }
+.theme-toggle .sun-icon .horizon {
+  stroke: var(--fabric-cyan); stroke-width: 2.1; stroke-linecap: round;
+  opacity: 1; transition: opacity .3s var(--ease), stroke .3s var(--ease);
+}
+/* Light theme renders the full sun. */
+html[data-theme="light"] .theme-toggle .sun-icon .rays { transform: none; }
+html[data-theme="light"] .theme-toggle .sun-icon .disc { cy: 12px; fill: #c48a00; }
+html[data-theme="light"] .theme-toggle .sun-icon .clip-rect { height: 24px; }
+html[data-theme="light"] .theme-toggle .sun-icon .ray { stroke: #c48a00; }
+html[data-theme="light"] .theme-toggle .sun-icon .ray.lower { opacity: 1; transform: scale(1); }
+html[data-theme="light"] .theme-toggle .sun-icon .horizon { opacity: 0; }
+/* Hover previews the click rather than spinning the whole mark, which would
+   tilt the horizon and swing the sunrise off-centre. Each motion is symmetric
+   about the vertical axis, so the mark stays in the middle of the button:
+   - sunrise: the disc climbs a little above the horizon and the rays follow it;
+   - full sun: only the rays turn, an eighth of a turn about the disc centre,
+     which lands them back on the same eight-ray pattern.
+   Hover-capable pointers only, so a tap on a phone does not leave it stuck. */
+@media (hover: hover) {
+  html:not([data-theme="light"]) .theme-toggle:hover .sun-icon .disc { cy: 15.2px; }
+  html:not([data-theme="light"]) .theme-toggle:hover .sun-icon .rays { transform: translateY(3.2px) scale(.9); }
+  html[data-theme="light"] .theme-toggle:hover .sun-icon .rays { transform: rotate(45deg); }
+}
+
+/* ===================== Layout ===================== */
+.layout {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  gap: 34px;
+  max-width: var(--maxw);
+  margin: 0 auto;
+  padding: 28px 24px 80px;
+  transition: grid-template-columns .28s var(--ease), gap .28s var(--ease);
+}
+.layout[data-sidebar="collapsed"] { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); gap: 26px; }
+
+/* Prose and the section outline, side by side. */
+.page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--aside-w);
+  grid-template-areas:
+    "head aside"
+    "main aside"
+    "pager aside";
+  align-items: start;
+  gap: 0 34px;
+  min-width: 0;
+}
+/* The home page reuses the rail and the same column, but flows as a block: it
+   leads with a hero rather than a page head, and carries no section outline. */
+.page-home { display: block; }
+
+.page-head { grid-area: head; }
+.on-this-page { grid-area: aside; }
+.content { grid-area: main; }
+.pager { grid-area: pager; }
+
+/* The outline is built from the rendered headings, so without JavaScript it
+   stays hidden — in which case the right column should not reserve space. */
+.page:has(.on-this-page[hidden]) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "head" "main" "pager";
+}
+
+/* ===================== Foldable sidebar (Fluent 2 navigation) ===================== */
+/* Small uppercase group headings; each entry a Fluent icon and its name; the
+   active page marked with its Filled icon, a 3px rounded brand indicator and a
+   faint blue tint; the weighting in a neutral counter. Kept as a rounded,
+   bordered card so it can fold to an icon rail and become a drawer. */
+.sidebar {
+  position: sticky; top: calc(var(--header-h) + 20px);
+  align-self: start;
+  max-height: calc(100vh - var(--header-h) - 36px);
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.sb-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 9px 9px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sb-head .sb-title {
+  font-size: 14px; font-weight: 700; color: var(--text);
+  flex: 1; white-space: nowrap;
+}
+.sb-fold, .sb-close {
+  width: 30px; height: 30px; flex: none; border-radius: var(--radius-sm);
+  border: 1px solid transparent; background: transparent; color: var(--text-soft);
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--fast), color var(--fast), border-color var(--fast);
+}
+.sb-fold:hover, .sb-close:hover { background: var(--surface-3); color: var(--ms-blue); border-color: var(--border); }
+.sb-fold .fluent-icon { transition: transform .28s var(--ease); }
+.layout[data-sidebar="collapsed"] .sb-fold .fluent-icon { transform: rotate(180deg); }
+.sb-close { display: none; }
+
+/* The list is sized to fit without scrolling on realistic laptop viewports —
+   a maximised window on a 1080p screen at 150% scaling is only ~620 CSS px
+   tall, where a few pixels of overflow would put up a scrollbar that shows
+   almost nothing. Scrolling stays available for genuinely short windows. */
+.sb-scroll { overflow-y: auto; padding: 6px 0 8px; scrollbar-width: thin; }
+.sb-group + .sb-group { margin-top: 4px; }
+.sb-group-label {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+  line-height: 1.5; color: var(--text-muted); padding: 6px 18px 2px;
+}
+.sb-link {
+  position: relative;
+  display: flex; align-items: center; gap: 10px;
+  margin: 1px 8px; padding: 5px 10px; line-height: 1.4;
+  border-radius: var(--radius-sm);
+  font-size: 14px; color: var(--text-soft);
+  transition: background var(--fast), color var(--fast);
+}
+.sb-link:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
+.sb-link[aria-current="page"] {
+  color: var(--text); font-weight: 600;
+  background: color-mix(in srgb, var(--ms-blue) 9%, transparent);
+}
+/* Fluent's selection indicator: a short, rounded 3px bar on the leading edge. */
+.sb-link[aria-current="page"]::before {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 3px; height: 18px; margin-top: -9px; border-radius: 3px;
+  background: var(--ms-blue);
+}
+.sb-link .fluent-icon { color: var(--text-soft); }
+.sb-link:hover .fluent-icon { color: var(--text); }
+.sb-link[aria-current="page"] .fluent-icon { color: var(--ms-blue); }
+.sb-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Collapsed rail: icons only, the way the Fabric portal's collapsed rail looks,
+   with labels hidden but still reachable by name. Scoped to the widths where the
+   rail really is a docked panel. Below that it is a drawer, and a persisted
+   "collapsed" preference must not leak into it: an icon-only column inside a
+   drawer is unreadable and wastes most of its width. */
+@media (min-width: 981px) {
+  .layout[data-sidebar="collapsed"] .sb-head .sb-title,
+  .layout[data-sidebar="collapsed"] .sb-group-label,
+  .layout[data-sidebar="collapsed"] .sb-link .counter { display: none; }
+  /* Visually hidden rather than display: none, so each icon-only link keeps
+     its accessible name. */
+  .layout[data-sidebar="collapsed"] .sb-text {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+  }
+  .layout[data-sidebar="collapsed"] .sb-head { padding: 9px 6px; justify-content: center; }
+  .layout[data-sidebar="collapsed"] .sb-scroll { padding: 6px 0; }
+  .layout[data-sidebar="collapsed"] .sb-link { justify-content: center; margin: 2px 7px; padding: 8px 4px; }
+  .layout[data-sidebar="collapsed"] .sb-group + .sb-group {
+    margin-top: 6px; border-top: 1px solid var(--border); padding-top: 6px;
+  }
+}
+
+.sb-backdrop { display: none; }
+
+/* ===================== Pills and counters ===================== */
+/* DP-700 v2 pills: rounded, on a 16% tint of their colour. */
+.pill {
+  --pill: var(--ms-blue);
+  --pill-text: var(--ms-blue);
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-weight: 700; line-height: 1.5;
+  padding: 2px 10px; border-radius: 999px; white-space: nowrap;
+  color: var(--pill-text);
+  background: color-mix(in srgb, var(--pill) 16%, transparent);
+}
+.pill .fluent-icon { width: 14px; height: 14px; }
+.pill.p-green  { --pill: var(--ms-green);   --pill-text: var(--green-text); }
+.pill.p-amber  { --pill: var(--ms-amber);   --pill-text: var(--amber-text); }
+.pill.p-purple { --pill: var(--ms-purple);  --pill-text: var(--purple-text); }
+.pill.p-teal   { --pill: var(--fabric-teal); --pill-text: var(--teal-text); }
+.pill.p-orange { --pill: var(--ms-orange);  --pill-text: var(--orange-text); }
+.pill.p-red    { --pill: var(--ms-red);     --pill-text: var(--ms-red); }
+.pill.p-accent { --pill: var(--accent, var(--ms-blue)); --pill-text: var(--accent, var(--ms-blue)); }
+.pill.p-gray   { color: var(--text-soft); background: var(--surface-3); }
+
+/* Neutral counter pills, as Fluent uses for counts beside navigation entries. */
+.counter {
+  display: inline-block; flex: none;
+  font-size: 11px; font-weight: 600; line-height: 18px;
+  padding: 0 7px; border-radius: 999px;
+  background: var(--surface-3); color: var(--text-soft);
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Applies to" strip, as on the SQL docs' banners: one pill per platform. */
+.applies {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+  margin: 10px 0 16px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); font-size: 13px;
+}
+.applies .applies-lbl { font-weight: 700; color: var(--text); margin-right: 2px; }
+.applies .pill { font-weight: 600; }
+.applies .pill.p-gray { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-muted) 60%, transparent); }
+.applies .applies-note { flex-basis: 100%; color: var(--text-soft); font-size: 12.5px; }
+
+/* ===================== On this page (right aside) ===================== */
+.on-this-page[hidden] { display: none; }
+.on-this-page {
+  position: sticky;
+  top: calc(var(--header-h) + 28px);
+  align-self: start;
+  max-height: calc(100vh - var(--header-h) - 56px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 4px 0 8px;
+}
+.otp > summary {
+  display: flex; align-items: center; gap: 8px;
+  list-style: none; cursor: default; pointer-events: none;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--text-muted);
+  padding: 0 0 10px 14px;
+}
+.otp > summary::-webkit-details-marker { display: none; }
+.otp-chevron { display: none; }
+
+.otp-body { position: relative; }
+/* DP-700 v2's 2px border track, with a brand marker sliding along it. */
+.otp-list { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 2px solid var(--border); }
+.otp-list li { margin: 0; }
+.otp-list a {
+  display: block; padding: 4px 6px; font-size: 13px; line-height: 1.45;
+  color: var(--text-soft); border-radius: 0 6px 6px 0;
+  transition: color var(--fast);
+}
+.otp-list a:hover { color: var(--text); text-decoration: none; }
+.otp-list a.otp-h3 { padding-left: 18px; font-size: 12.5px; }
+.otp-list a.active { color: var(--ms-blue); font-weight: 600; }
+
+/* The marker slides between entries rather than snapping, which is what makes
+   the outline feel like one continuous position indicator. */
+.otp-marker {
+  position: absolute; left: 0; top: 0;
+  width: 2px; height: 20px; border-radius: 2px;
+  background: var(--ms-blue);
+  opacity: 0;
+  transition: top .25s cubic-bezier(0, 1, .5, 1), opacity .25s var(--ease);
+}
+
+/* ===================== Hero (home) ===================== */
+/* The Fabric hero banner. White text on a gradient keeps the deep light-theme
+   stops in both themes, so it passes AA in dark mode too. */
+.hero {
+  position: relative; overflow: hidden;
+  border-radius: var(--radius-hero); padding: 52px 44px;
+  background: linear-gradient(125deg, #0b3d6e, #0f6cbd 45%, #0d7d72 85%, #00b7c3);
+  color: #fff; box-shadow: var(--shadow-lg); margin-bottom: 30px;
+}
+.hero::after {
+  content: ""; position: absolute; inset: 0; z-index: 0; opacity: .25; pointer-events: none;
+  background-image:
+    radial-gradient(circle at 80% 20%, rgba(255, 255, 255, .4), transparent 35%),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, .06) 0 2px, transparent 2px 22px);
+}
+/* The sunrise mark as a faint white watermark. */
+.hero::before {
+  content: ""; position: absolute; z-index: 0; pointer-events: none;
+  top: 50%; right: -40px; transform: translateY(-50%);
+  width: min(48%, 460px); aspect-ratio: 1 / 1;
+  background: var(--hero-mark) center / contain no-repeat;
+  filter: brightness(0) invert(1);
+  opacity: .1;
+}
+.hero > * { position: relative; z-index: 1; }
+.hero .eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em;
+  background: rgba(255, 255, 255, .18); padding: 5px 13px; border-radius: 999px; margin-bottom: 16px;
+}
+.hero h1 { margin: 0 0 12px; font-size: 2.5rem; line-height: 1.1; font-weight: 700; letter-spacing: -.5px; color: #fff; }
+.hero p { margin: 0; font-size: 1.1rem; max-width: 720px; color: rgba(255, 255, 255, .94); }
+.hero p strong { color: #fff; }
+.hero-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.hero-meta span {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: rgba(255, 255, 255, .16); border: 1px solid rgba(255, 255, 255, .24);
+  padding: 6px 13px; border-radius: 999px; font-size: 13.5px; font-weight: 600;
+}
+.hero-meta .fluent-icon { width: 16px; height: 16px; }
+
+/* ===================== Page head ===================== */
+/* "Home › Page", as on Microsoft Learn. */
+.breadcrumb {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 13px; color: var(--text-muted); margin-bottom: 14px;
+}
+.breadcrumb a { color: var(--text-soft); }
+.breadcrumb a:hover { color: var(--ms-blue); }
+.breadcrumb .sep { color: var(--text-muted); }
+.breadcrumb [aria-current] { color: var(--text); font-weight: 600; }
+
+.page-head .ph-block {
+  border-left: 5px solid var(--accent, var(--ms-blue));
+  padding: 4px 0 4px 18px; margin-bottom: 14px;
+}
+.page-head .kicker {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .78rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent, var(--ms-blue));
+}
+.page-head h1 { margin: 4px 0 8px; font-size: 2rem; line-height: 1.18; font-weight: 700; }
+.page-head .lead { margin: 0; max-width: 780px; }
+.page-labels { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+/* The revision pill is long; on a phone it may wrap rather than widen the page. */
+.page-labels .pill { white-space: normal; max-width: 100%; }
+
+/* ===================== Content typography ===================== */
+.content { min-width: 0; }
+.content h2 {
+  font-size: 1.5rem; font-weight: 700; line-height: 1.3;
+  margin: 44px 0 14px; padding-bottom: 8px;
+  border-bottom: 2px solid var(--border);
+}
+.content h2 .num { color: var(--accent, var(--ms-blue)); font-weight: 800; margin-right: 8px; }
+.content h3 { font-size: 1.18rem; font-weight: 700; margin: 30px 0 10px; color: var(--text); }
+.content h4 { font-size: 1.02rem; font-weight: 700; margin: 22px 0 8px; color: var(--text-soft); }
+.content p { margin: 0 0 16px; }
+.content p, .content li { color: var(--text-soft); }
+.content strong { color: var(--text); font-weight: 600; }
+.content ul, .content ol { padding-left: 22px; margin: 0 0 16px; }
+.content li { margin: 5px 0; }
+.content li > ul, .content li > ol { margin: 6px 0 0; }
+
+/* Inline code on a surface-3 chip, purple in light and lilac in dark. */
+code {
+  font-family: var(--mono); font-size: .88em;
+  background: var(--surface-3); padding: 2px 6px; border-radius: 5px;
+  color: var(--ms-purple); word-break: break-word;
+}
+html[data-theme="dark"] code { color: #d6a8ff; }
+pre code { background: none; padding: 0; color: inherit; font-size: inherit; word-break: normal; border-radius: 0; }
+html[data-theme="dark"] pre code { color: inherit; }
+
+.lead { font-size: 1.08rem; line-height: 1.7; color: var(--text-soft); }
+
+/* ===================== Panels and cards ===================== */
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 22px 24px; margin: 18px 0; box-shadow: var(--shadow-sm);
+}
+.card > :first-child { margin-top: 0; }
+.card > :last-child { margin-bottom: 0; }
+.card ul { margin-bottom: 0; }
+
+.card-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 18px; margin: 20px 0;
+}
+
+/* DP-700 v2 nav cards: a 5px accent stripe, an uppercase accent badge, a
+   tinted Fluent icon tile and a short description. Hover lifts 3px with the
+   larger shadow and the accent-blue border. */
+.nav-card {
+  position: relative; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 22px 22px 20px 26px; color: var(--text); box-shadow: var(--shadow-sm);
+  transition: transform var(--fast) var(--ease), box-shadow var(--fast) var(--ease), border-color var(--fast) var(--ease);
+}
+.nav-card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+  background: var(--accent, var(--ms-blue));
+}
+.nav-card:hover {
+  transform: translateY(-3px); box-shadow: var(--shadow-lg);
+  border-color: var(--ms-blue); text-decoration: none;
+}
+.nav-card .nc-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.nav-card .card-icon {
+  width: 40px; height: 40px; border-radius: var(--radius-sm); flex: none;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent, var(--ms-blue));
+  background: color-mix(in srgb, var(--accent, var(--ms-blue)) 14%, transparent);
+}
+.nav-card .nc-badge {
+  font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent, var(--ms-blue));
+}
+.nav-card h3 { margin: 0 0 8px; font-size: 1.1rem; line-height: 1.35; color: var(--text); }
+.nav-card p { margin: 0 0 14px; color: var(--text-soft); font-size: .92rem; line-height: 1.55; flex: 1; }
+.nav-card .nc-foot {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .84rem; color: var(--ms-blue); font-weight: 600;
+}
+
+/* ===================== Skills at a glance ===================== */
+.weight-list { display: flex; flex-direction: column; gap: 16px; margin: 4px 0; }
+.weight-row .wr-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+.weight-row .wr-name { font-weight: 600; color: var(--text); }
+.weight-row .wr-name a { color: inherit; }
+.weight-row .wr-name a:hover { color: var(--ms-blue); }
+.weight-row .wr-pct { font-weight: 700; color: var(--accent, var(--ms-blue)); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.progress { height: 12px; background: var(--surface-3); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); }
+.progress > span {
+  display: block; height: 100%; width: 0; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent, var(--ms-blue)), color-mix(in srgb, var(--accent, var(--ms-blue)) 55%, #fff));
+  transition: width 1.1s cubic-bezier(.2, .7, .2, 1);
+}
+.wr-note { margin: 12px 0 0; font-size: 13px; color: var(--text-muted); }
+
+/* ===================== Stats ===================== */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 16px; margin: 20px 0; }
+.stat {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px; text-align: center; box-shadow: var(--shadow-sm);
+}
+.stat .s-num { font-size: 1.8rem; font-weight: 800; line-height: 1; color: var(--accent, var(--ms-blue)); }
+.stat .s-lbl { font-size: .84rem; color: var(--text-soft); margin-top: 8px; line-height: 1.4; }
+
+/* ===================== Callouts ===================== */
+/* DP-700 v2's five kinds: a 5px left rule, a Fluent icon and title in the
+   kind's colour, and a faint tint behind the text. */
+.callout {
+  --kind: var(--ms-blue);
+  --kind-text: var(--ms-blue);
+  margin: 18px 0; padding: 14px 18px;
+  border: 1px solid var(--border); border-left: 5px solid var(--kind);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--kind) 8%, var(--surface));
+  box-shadow: var(--shadow-sm);
+  color: var(--text-soft);
+}
+.callout-exam { --kind: var(--ms-amber);  --kind-text: var(--amber-text); background: color-mix(in srgb, var(--ms-amber) 10%, var(--surface)); }
+.callout-tip  { --kind: var(--ms-green);  --kind-text: var(--green-text); }
+.callout-warn { --kind: var(--ms-orange); --kind-text: var(--orange-text); }
+.callout-note { --kind: var(--ms-blue);   --kind-text: var(--ms-blue); }
+.callout-code { --kind: var(--ms-purple); --kind-text: var(--purple-text); }
+html[data-theme="dark"] .callout-code { --kind: #a37bd6; }
+html[data-theme="dark"] .callout-tip { --kind: #3a9a3a; }
+.callout .callout-title {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 6px; font-weight: 700; color: var(--kind-text);
+}
+.content .callout p, .callout p { color: var(--text-soft); margin: 0 0 8px; }
+.callout ul, .callout ol { margin: 0 0 8px; }
+.callout > :last-child { margin-bottom: 0; }
+
+/* ===================== Tables ===================== */
+/* Header row on a brand gradient with white text, zebra rows on surface-2 and
+   a hover on surface-3, each table in its own horizontally scrollable wrapper. */
+.table-wrap {
+  margin: 18px 0; overflow-x: auto; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm);
+}
+table.tbl { width: 100%; border-collapse: collapse; font-size: .92rem; background: var(--surface); min-width: 540px; }
+table.tbl thead th {
+  background: linear-gradient(180deg, #0f6cbd, #10508f); color: #fff;
+  text-align: left; padding: 11px 14px; font-weight: 600;
+}
+table.tbl.t-purple thead th { background: linear-gradient(180deg, #5c2d91, #45216e); }
+table.tbl.t-teal thead th   { background: linear-gradient(180deg, #0d7d72, #095c54); }
+table.tbl.t-orange thead th { background: linear-gradient(180deg, #c23400, #932700); }
+table.tbl.t-slate thead th  { background: linear-gradient(180deg, #4a5568, #2d3748); }
+table.tbl td { padding: 10px 14px; border-top: 1px solid var(--border); vertical-align: top; color: var(--text-soft); }
+table.tbl tbody tr:nth-child(even) { background: var(--surface-2); }
+table.tbl tbody tr { transition: background var(--fast); }
+table.tbl tbody tr:hover { background: var(--surface-3); }
+table.tbl td strong { color: var(--text); }
+table.tbl td:first-child { color: var(--text); font-weight: 600; }
+table.tbl .pill { font-size: 11.5px; }
+
+/* ===================== Figures and diagrams ===================== */
+/* DP-700 v2's bordered diagram card with an italic caption below. */
+.figure {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px; margin: 20px 0; overflow-x: auto; box-shadow: var(--shadow-sm);
+}
+/* Before Mermaid runs, the definition is shown as muted monospace so the
+   figure degrades to something readable rather than an empty frame. */
+.figure pre.mermaid {
+  margin: 0; font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  color: var(--text-soft); white-space: pre-wrap; text-align: left; opacity: .7;
+  background: none; border: 0; padding: 0;
+}
+.figure pre.mermaid[data-processed] {
+  font-family: var(--font); font-size: inherit; opacity: 1;
+  display: block; white-space: normal;
+}
+/* Centred with auto margins rather than flex, so a diagram wider than its
+   figure (see the min-width set in Mermaid.astro) overflows to the right and
+   stays fully reachable by horizontal scrolling. */
+.figure pre.mermaid[data-processed] svg { display: block; margin: 0 auto; }
+.figure figcaption { font-size: .84rem; color: var(--text-soft); margin-top: 10px; text-align: center; font-style: italic; }
+.figure svg { max-width: 100%; height: auto; }
+
+/* ===================== Code ===================== */
+/* Code blocks on a bordered surface with DP-700 v2's language chip,
+   highlighted by Shiki with VS Code's light-plus and dark-plus themes. */
+.code-block { position: relative; margin: 16px 0; }
+.code-block .lang {
+  position: absolute; top: 8px; right: 10px; z-index: 1;
+  font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; line-height: 18px;
+  color: var(--text-soft); background: var(--surface-3);
+  border: 1px solid var(--border); padding: 0 8px; border-radius: 999px;
+}
+.code-block pre {
+  margin: 0; padding: 16px 18px; border-radius: var(--radius-sm);
+  overflow-x: auto; font-size: .85rem; line-height: 1.6;
+  border: 1px solid var(--border);
+  background: var(--code-bg) !important;
+}
+.code-block pre code { font-family: var(--mono); }
+
+/* Shiki emits both themes inline; swap them with the site theme. */
+html[data-theme="dark"] .astro-code,
+html[data-theme="dark"] .astro-code span {
+  color: var(--shiki-dark) !important;
+  font-style: var(--shiki-dark-font-style) !important;
+  font-weight: var(--shiki-dark-font-weight) !important;
+  text-decoration: var(--shiki-dark-text-decoration) !important;
+}
+
+/* ===================== Term lists, steps and checklists ===================== */
+dl.terms { margin: 16px 0; }
+dl.terms dt { font-weight: 700; color: var(--text); margin-top: 12px; }
+dl.terms dd { margin: 2px 0 0; color: var(--text-soft); }
+
+/* DP-700 v2's numbered steps: 30px circles in the page accent. */
+ol.steps { counter-reset: step; list-style: none; padding-left: 0; }
+ol.steps > li { position: relative; padding-left: 44px; margin: 14px 0; min-height: 30px; }
+ol.steps > li::before {
+  counter-increment: step; content: counter(step);
+  position: absolute; left: 0; top: -2px;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: .9rem; font-weight: 700; color: #fff;
+  background: var(--accent, var(--ms-blue));
+}
+
+/* Checklists with Fluent's empty checkbox squares. */
+ul.checklist { list-style: none; padding-left: 0; margin: 0; }
+ul.checklist > li {
+  position: relative; margin: 0; padding: 9px 0 9px 30px;
+  border-bottom: 1px solid var(--border);
+}
+ul.checklist > li:last-child { border-bottom: 0; }
+ul.checklist > li::before {
+  content: ""; position: absolute; left: 2px; top: 13px;
+  width: 16px; height: 16px; border-radius: 3px;
+  border: 1px solid var(--text-muted); background: var(--surface);
+}
+
+hr.divider { height: 1px; background: var(--border); margin: 30px 0; border: 0; }
+
+/* ===================== Pager ===================== */
+.pager { display: flex; justify-content: space-between; gap: 14px; margin-top: 46px; flex-wrap: wrap; }
+.pager a {
+  flex: 1 1 250px; display: flex; flex-direction: column;
+  padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); box-shadow: var(--shadow-sm);
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.pager a:hover { border-color: var(--ms-blue); text-decoration: none; box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.pager .pg-dir {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .76rem; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 2px;
+}
+.pager .pg-title { font-weight: 600; color: var(--text); }
+.pager a.next { text-align: right; align-items: flex-end; }
+
+/* ===================== Floating buttons ===================== */
+/* Fluent 2 icon buttons: 40px with an 8px corner, a hairline border, the small
+   resting shadow and a Fluent icon. Back to Top is the primary action and takes
+   Fluent's brand background; Home and the theme switcher are neutral buttons.
+   On hover the colour, border and shadow ease together with a 2px lift.
+   Colours are scoped here as --fab-* so each theme (and Back to Top) only
+   swaps values. */
+.float-btn, .float-theme {
+  --fab-bg: var(--surface);
+  --fab-bg-hover: var(--surface-3);
+  --fab-bg-active: var(--border);
+  --fab-border: var(--border-strong);
+  --fab-border-hover: var(--border-strong);
+  --fab-fg: var(--text-soft);
+  --fab-fg-hover: var(--ms-blue);
+  --fab-shadow: var(--shadow-sm);
+  --fab-shadow-hover: var(--shadow-md);
+  --fab-tip-bg: #242424;
+  --fab-tip-fg: #ffffff;
+
+  position: fixed; z-index: 90;
+  width: 40px; height: 40px; padding: 0; border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--fab-bg); border: 1px solid var(--fab-border); color: var(--fab-fg);
+  box-shadow: var(--fab-shadow); cursor: pointer; text-decoration: none;
+  transition-property: opacity, visibility, transform, background-color, border-color, color, box-shadow;
+  transition-duration: .2s;
+  transition-timing-function: var(--ease);
+}
+html[data-theme="dark"] .float-btn, html[data-theme="dark"] .float-theme {
+  --fab-bg: var(--surface-3);
+  --fab-bg-hover: var(--border-strong);
+  --fab-bg-active: var(--border);
+  --fab-border: var(--border-strong);
+  --fab-border-hover: var(--text-muted);
+  --fab-fg-hover: var(--ms-blue-light);
+  --fab-tip-bg: #f5f5f5;
+  --fab-tip-fg: #1b1f27;
+}
+.float-top {
+  --fab-bg: #0f6cbd;
+  --fab-bg-hover: #115ea3;
+  --fab-bg-active: #0f548c;
+  --fab-border: transparent;
+  --fab-border-hover: transparent;
+  --fab-fg: #fff;
+  --fab-fg-hover: #fff;
+}
+html[data-theme="dark"] .float-top {
+  --fab-bg: #115ea3;
+  --fab-bg-hover: #0f6cbd;
+  --fab-bg-active: #0f548c;
+  --fab-border: transparent;
+  --fab-border-hover: transparent;
+  --fab-fg: #fff;
+  --fab-fg-hover: #fff;
+}
+
+/* Hidden until the reader scrolls past the fold. visibility only flips to
+   hidden once the fade has finished, and keeps the hidden buttons out of the
+   tab order. */
+.float-btn {
+  right: 24px;
+  opacity: 0; visibility: hidden;
+  transform: translateY(8px);
+}
+.float-btn.show { opacity: 1; visibility: visible; transform: none; }
+.float-top { bottom: 24px; }
+.float-home { bottom: 74px; }
+
+/* The theme switcher floats bottom-left rather than sitting in the top bar,
+   which is what leaves room for the full wordmark on a phone. Unlike the
+   right-hand stack it is always visible: switching theme has nothing to do
+   with how far down the page you are. */
+.float-theme { left: 24px; bottom: 24px; }
+
+/* Hover-capable pointers only, so a tap on a phone doesn't leave a button
+   stuck in its hover state. */
+@media (hover: hover) {
+  .float-btn.show:hover, .float-theme:hover {
+    transform: translateY(-2px); text-decoration: none;
+    background: var(--fab-bg-hover); border-color: var(--fab-border-hover); color: var(--fab-fg-hover);
+    box-shadow: var(--fab-shadow-hover);
+  }
+}
+.float-btn.show:active, .float-theme:active { transform: none; background: var(--fab-bg-active); }
+
+/* Fluent-style tooltip drawn from the control's aria-label, beside the button
+   and towards the page. It appears after a short delay on hover and straight
+   away on keyboard focus. The theme switcher only gets one once its script has
+   set the label. */
+.float-btn::after, .float-theme[aria-label]::after {
+  content: attr(aria-label);
+  position: absolute; top: 50%;
+  padding: 5px 10px; border-radius: 4px;
+  background: var(--fab-tip-bg); color: var(--fab-tip-fg);
+  box-shadow: var(--shadow-md);
+  font: 400 12px/1.4 var(--font); white-space: nowrap;
+  pointer-events: none; opacity: 0;
+  transition: opacity .15s ease-out, transform .15s ease-out;
+}
+.float-btn::after { right: calc(100% + 8px); transform: translate(4px, -50%); }
+.float-theme[aria-label]::after { left: calc(100% + 8px); transform: translate(-4px, -50%); }
+@media (hover: hover) {
+  .float-btn:hover::after, .float-theme:hover::after {
+    opacity: 1; transform: translate(0, -50%); transition-delay: .4s;
+  }
+}
+.float-btn:focus-visible::after, .float-theme:focus-visible::after { opacity: 1; transform: translate(0, -50%); }
+
+/* ===================== Footer ===================== */
+.site-footer {
+  border-top: 1px solid var(--border); background: var(--surface);
+  padding: 40px 24px 30px; margin-top: 40px;
+  font-size: .9rem; color: var(--text-soft);
+}
+.footer-inner { max-width: 1240px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 30px 44px; }
+.footer-col { flex: 1 1 200px; min-width: 0; }
+.footer-col-author { flex: 2.2 1 320px; }
+.footer-inner h5 {
+  font-size: .8rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-muted); margin: 0 0 12px;
+}
+.footer-inner a { color: var(--text-soft); display: block; padding: 3px 0; font-size: .92rem; transition: color var(--fast); }
+.footer-inner a:hover { color: var(--ms-blue); text-decoration: none; }
+
+.maintainer-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--green-text); background: color-mix(in srgb, var(--ms-green) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ms-green) 38%, transparent);
+  padding: 3px 10px; border-radius: 999px; margin-bottom: 7px;
+}
+.author-card { display: flex; gap: 14px; align-items: center; }
+.author-card > img {
+  width: 60px; height: 60px; border-radius: 50%; object-fit: cover; flex: none;
+  border: 2px solid var(--ms-blue);
+}
+.author-card .ac-name { font-weight: 700; color: var(--text); }
+.author-card .ac-role { font-size: .85rem; color: var(--text-soft); }
+.author-links { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.footer-inner .author-links a {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .82rem; font-weight: 600; padding: 6px 11px;
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  transition: background var(--fast), color var(--fast), border-color var(--fast);
+}
+.footer-inner .author-links a:hover { background: var(--surface-3); color: var(--ms-blue); border-color: var(--border-strong); }
+.author-links a svg, .author-links a img { width: 16px; height: 16px; flex: none; display: block; }
+
+.star-cta {
+  background: color-mix(in srgb, var(--ms-amber) 14%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--ms-amber) 40%, var(--border));
+  border-radius: var(--radius); padding: 14px 16px; margin-top: 16px;
+  font-size: .9rem; color: var(--text-soft);
+}
+.star-cta strong { color: var(--text); }
+.star-cta p { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 12px; line-height: 1.5; }
+.star-cta p .fluent-icon { color: var(--amber-text); margin-top: 2px; }
+.issue-note {
+  display: flex; gap: 8px; align-items: flex-start;
+  background: color-mix(in srgb, var(--ms-blue) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--ms-blue) 38%, var(--border));
+  border-radius: var(--radius); padding: 14px 16px; margin-top: 12px;
+  font-size: .9rem; color: var(--text-soft); line-height: 1.5;
+}
+.issue-note .fluent-icon { color: var(--ms-blue); margin-top: 2px; }
+.issue-note strong { color: var(--text); }
+/* Inline links inside the banners: undo the footer's block-link styling. */
+.footer-inner .issue-note a { display: inline; padding: 0; font-size: inherit; color: var(--ms-blue); font-weight: 600; }
+/* Buttons grow to fill their row, so however they wrap the rows end flush.
+   Same pairing as the support callout on marcogrimaldi29.com. */
+.support-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.footer-inner .support-actions a {
+  display: inline-flex; flex: 1 1 auto; justify-content: center; align-items: center; gap: 8px;
+  min-height: 36px; padding: 6px 14px; border-radius: var(--radius-sm); border: 1px solid transparent;
+  font-size: .86rem; font-weight: 600;
+  transition: background var(--fast), border-color var(--fast), box-shadow var(--fast), transform var(--fast), color var(--fast);
+}
+.footer-inner .support-actions a:hover { text-decoration: none; transform: translateY(-1px); }
+.support-actions svg { width: 16px; height: 16px; flex: none; display: block; }
+.footer-inner .support-actions .support-star { background: var(--surface-2); border-color: var(--border-strong); color: var(--text); }
+.footer-inner .support-actions .support-star:hover { background: var(--surface-3); border-color: var(--ms-amber); color: var(--text); }
+.support-actions .support-star .fluent-icon { color: var(--amber-text); }
+/* LinkedIn's own blue in both themes, lightening on hover. */
+.footer-inner .support-actions .support-linkedin { background: #0a66c2; border-color: #0a66c2; color: #fff; }
+.footer-inner .support-actions .support-linkedin:hover { background: #1275d1; border-color: #1275d1; color: #fff; }
+.footer-bottom {
+  max-width: 1240px; margin: 28px auto 0; padding-top: 18px;
+  border-top: 1px solid var(--border); font-size: .82rem; color: var(--text-soft);
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px;
+}
+
+/* ===================== Responsive ===================== */
+
+/* Below this width the right column would squeeze the prose, so the outline
+   folds into a card between the page head and the body instead. */
+@media (max-width: 1280px) {
+  .page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "head" "aside" "main" "pager";
+  }
+  .on-this-page {
+    position: static; max-height: none; overflow: visible;
+    margin: 20px 0 4px; padding: 0;
+  }
+  .otp { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-sm); }
+  .otp > summary {
+    pointer-events: auto; cursor: pointer; padding: 11px 16px;
+    font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--text);
+    transition: background var(--fast);
+    border-radius: var(--radius);
+  }
+  .otp > summary:hover { background: var(--surface-3); }
+  .otp[open] > summary { border-bottom: 1px solid var(--border); border-radius: var(--radius) var(--radius) 0 0; }
+  .otp-chevron { display: block; color: var(--text-soft); transition: transform .25s var(--ease); }
+  .otp[open] .otp-chevron { transform: rotate(180deg); }
+  .otp-body { padding: 12px 16px 14px; max-height: min(52vh, 420px); overflow-y: auto; scrollbar-width: thin; }
+  .otp-marker { left: 16px; }
+}
+
+@media (max-width: 980px) {
+  .layout, .layout[data-sidebar="collapsed"] { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .sidebar-open { display: inline-flex; }
+  /* The drawer stays the same rounded, bordered card as the docked rail rather
+     than becoming a flush full-bleed panel, so the rail keeps its identity at
+     every width. Inset from the edges is what lets the corners actually read. */
+  .sidebar {
+    position: fixed; z-index: 140;
+    top: var(--drawer-gap); left: var(--drawer-gap); bottom: auto;
+    width: min(320px, calc(100vw - var(--drawer-gap) * 2 - 24px));
+    /* Explicit height rather than top+bottom: the rail is a grid item carrying
+       align-self: start, which otherwise shrinks it to its content. dvh also
+       keeps it correct while mobile browser chrome shows and hides. */
+    height: calc(100dvh - var(--drawer-gap) * 2);
+    max-height: none;
+    border-radius: var(--radius);
+    border-width: 1px;
+    box-shadow: var(--shadow-lg);
+    /* Clear the left inset as well as its own width, so no corner peeks out. */
+    transform: translateX(calc(-100% - var(--drawer-gap) - 4px));
+    /* visibility keeps the closed drawer out of the tab order, so Tab never
+       lands on an off-screen link and scrolls the page sideways. */
+    visibility: hidden;
+    transition: transform .28s var(--ease), visibility 0s linear .28s;
+  }
+  .layout[data-drawer="open"] .sidebar {
+    transform: translateX(0); visibility: visible;
+    transition: transform .28s var(--ease), visibility 0s;
+  }
+  .sb-head { padding: 12px 10px 12px 18px; }
+  .sb-scroll { padding: 8px 0 16px; }
+  /* Comfortable touch targets rather than the dense desktop spacing. */
+  .sb-link { padding: 10px 12px; font-size: 15px; margin: 2px 10px; }
+  /* A narrow drawer wraps a long name rather than truncating it. */
+  .sb-text { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.3; }
+  .sb-group-label { padding: 10px 20px 4px; }
+  .sb-fold { display: none; }
+  .sb-close { display: inline-flex; }
+  /* Freeze the page behind an open drawer. */
+  html.drawer-open, html.drawer-open body { overflow: hidden; }
+  .sb-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 130;
+    background: var(--backdrop);
+    opacity: 0; pointer-events: none; transition: opacity .25s var(--ease);
+    border: 0; padding: 0; cursor: pointer;
+  }
+  .layout[data-drawer="open"] .sb-backdrop { opacity: 1; pointer-events: auto; }
+  .footer-col-author { flex-basis: 100%; }
+  .footer-bottom { flex-direction: column; }
+}
+
+@media (max-width: 760px) {
+  .layout { padding: 20px 16px 64px; }
+  .site-footer { padding: 32px 16px 24px; }
+  .hero { padding: 34px 22px; }
+  .hero h1 { font-size: 1.9rem; }
+  .lead { font-size: 1rem; }
+  .page-head h1 { font-size: 1.65rem; }
+  .content h2 { font-size: 1.3rem; }
+  .content h3 { font-size: 1.1rem; }
+  .card { padding: 18px; }
+  .card-grid { grid-template-columns: 1fr; }
+  .pager a.next { text-align: left; align-items: flex-start; }
+  /* Tighten the bar so the full wordmark fits on a phone rather than being
+     clipped by the tools beside it. The repo link keeps its whole label —
+     star, "on" and the GitHub mark — and gives up padding instead. */
+  .site-header { padding: 0 12px; gap: 10px; }
+  .header-tools { gap: 6px; }
+  .icon-btn { width: 34px; height: 34px; }
+  .ghub-link { height: 34px; padding: 0 9px; gap: 5px; }
+  .brand { gap: 9px; }
+  .brand img { width: 27px; height: 27px; }
+  .code-block .lang {
+    position: static; display: block; width: fit-content; margin: 0 0 6px auto;
+  }
+}
+
+/* Smallest phones still in circulation, down to 320px. The wordmark stays
+   whole; everything around it gives up a few more pixels instead, and the
+   wordmark itself steps down only slightly. */
+@media (max-width: 380px) {
+  .site-header { padding: 0 6px; gap: 6px; }
+  .site-header .icon-btn { width: 30px; height: 30px; }
+  .brand { gap: 6px; font-size: 15px; }
+  .brand img { width: 23px; height: 23px; }
+  .ghub-link { height: 30px; padding: 0 6px; gap: 3px; font-size: 13px; }
+  .ghub-link .fluent-icon, .ghub-link .ghub-mark { width: 15px; height: 15px; }
+  .header-tools { gap: 4px; }
+  .float-theme { left: 16px; bottom: 16px; }
+  .float-btn { right: 16px; }
+  .float-top { bottom: 16px; }
+  .float-home { bottom: 66px; }
+}
+
+/* ===================== Motion and print ===================== */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .bg-animation .cloud, .code-rain .rain-col { animation: none !important; }
+  .code-rain { display: none; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    transition-duration: .001ms !important;
+  }
+  /* Except the floating buttons' colour and opacity fades, which aren't
+     motion: keep those, and drop the slide-in, hover lift and tooltip nudge. */
+  .float-btn, .float-theme { transition-duration: .2s !important; }
+  .float-btn::after, .float-theme::after { transition-duration: .15s !important; }
+  .float-btn, .float-btn.show:hover, .float-theme:hover { transform: none; }
+  .float-btn::after, .float-theme[aria-label]::after { transform: translate(0, -50%); }
+}
+
+@media print {
+  .site-header, .sidebar, .sb-backdrop, .site-footer, .float-btn, .float-theme, .pager,
+  .bg-animation, .code-rain, .on-this-page { display: none !important; }
+  .layout, .layout[data-sidebar="collapsed"] { grid-template-columns: 1fr; padding: 0; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  .hero { box-shadow: none; }
+  .card, .callout, .figure, .table-wrap, .nav-card { break-inside: avoid; box-shadow: none; }
+}

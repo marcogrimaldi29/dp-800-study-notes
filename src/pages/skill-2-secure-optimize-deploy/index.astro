@@ -1,0 +1,684 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import AppliesTo from '../../components/AppliesTo.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const layers = `
+flowchart TB
+  CALLER["Caller<br/>app · user · agent"] --> NET["Network<br/>firewall · private endpoint"]
+  NET --> AUTHN["Authentication<br/>Entra ID · managed identity · passwordless"]
+  AUTHN --> AUTHZ["Authorization<br/>roles · GRANT / DENY · RLS"]
+  AUTHZ --> DATA["Data protection<br/>Always Encrypted · DDM · column encryption · TDE"]
+  DATA --> AUDIT["Auditing<br/>who did what, when"]
+`;
+
+const pipeline = `
+flowchart TB
+  PR["Pull request<br/>feature branch → main"] --> BUILD["Build job<br/>dotnet build · code analysis"]
+  BUILD --> TEST["Test job<br/>SQL Server container · unit and integration tests"]
+  TEST --> ART["Artifact<br/>.dacpac"]
+  ART --> DEVENV["Deploy to test<br/>environment: test"]
+  DEVENV --> REPORT["DeployReport and script<br/>review the plan"]
+  REPORT --> GATE["Environment gate<br/>required reviewers · branch rule"]
+  GATE --> PROD["Publish to production<br/>azure/sql-action · OIDC login"]
+`;
+
+const changes = `
+flowchart TB
+  Q["Something must react to row changes"] --> A{"Push each change as an<br/>event to a stream?"}
+  A -->|"yes"| CES["Change event streaming<br/>Event Hubs · Fabric Eventstream"]
+  A -->|"no"| B{"Need the old and new<br/>values of every change?"}
+  B -->|"yes"| CDC["Change data capture<br/>change tables · LSN ranges"]
+  B -->|"no, just which rows"| C{"Run code when<br/>rows change?"}
+  C -->|"serverless function"| FN["Azure Functions<br/>SQL trigger binding"]
+  C -->|"low-code workflow"| LA["Azure Logic Apps<br/>SQL connector trigger"]
+  C -->|"sync on my own schedule"| CT["Change Tracking<br/>CHANGETABLE · versions"]
+`;
+
+const ae = `-- Always Encrypted: the driver encrypts on the client; the engine never sees plaintext.
+-- Keys: a column master key (in Azure Key Vault) protects column encryption keys.
+CREATE TABLE dbo.Patient
+(
+    PatientID  int IDENTITY PRIMARY KEY,
+    NationalId char(11) COLLATE Latin1_General_BIN2
+        ENCRYPTED WITH (COLUMN_ENCRYPTION_KEY = CEK_Patient,
+                        ENCRYPTION_TYPE = DETERMINISTIC,          -- equality lookups, joins, grouping
+                        ALGORITHM = 'AEAD_AES_256_CBC_HMAC_SHA_256') NOT NULL,
+    Diagnosis  nvarchar(400)
+        ENCRYPTED WITH (COLUMN_ENCRYPTION_KEY = CEK_Patient,
+                        ENCRYPTION_TYPE = RANDOMIZED,             -- stronger; no operations without an enclave
+                        ALGORITHM = 'AEAD_AES_256_CBC_HMAC_SHA_256') NULL
+);
+-- Client connection string: Column Encryption Setting=Enabled
+-- Queries must be parameterized so the driver can encrypt the parameter values.`;
+
+const cle = `-- Column-level (cell-level) encryption: the engine encrypts with a symmetric key.
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'<strong password>';
+CREATE CERTIFICATE CertPayroll WITH SUBJECT = 'Payroll column key protector';
+CREATE SYMMETRIC KEY SymPayroll WITH ALGORITHM = AES_256 ENCRYPTION BY CERTIFICATE CertPayroll;
+
+OPEN SYMMETRIC KEY SymPayroll DECRYPTION BY CERTIFICATE CertPayroll;
+UPDATE dbo.Employee SET SalaryEnc = ENCRYPTBYKEY(KEY_GUID('SymPayroll'), CAST(Salary AS varchar(20)));
+SELECT EmployeeID, CAST(DECRYPTBYKEY(SalaryEnc) AS varchar(20)) AS Salary FROM dbo.Employee;
+CLOSE SYMMETRIC KEY SymPayroll;`;
+
+const ddm = `-- Dynamic data masking: obfuscates results for users without UNMASK. Data is unchanged.
+ALTER TABLE dbo.Customer ALTER COLUMN Email
+    ADD MASKED WITH (FUNCTION = 'email()');                -- aXXX@XXXX.com
+ALTER TABLE dbo.Customer ALTER COLUMN Phone
+    ADD MASKED WITH (FUNCTION = 'partial(0, "XXX-XXX-", 4)');
+ALTER TABLE dbo.Customer ALTER COLUMN CreditLimit
+    ADD MASKED WITH (FUNCTION = 'default()');              -- 0 for numbers, XXXX for strings
+ALTER TABLE dbo.Customer ALTER COLUMN BirthDate
+    ADD MASKED WITH (FUNCTION = 'datetime("Y")');          -- masks the year
+
+-- Granular UNMASK (SQL Server 2022+, Azure SQL, Fabric): database, schema, table or column
+GRANT UNMASK ON dbo.Customer(Email) TO SupportAgent;`;
+
+const rls = `-- Row-level security: an inline TVF predicate bound to a security policy
+CREATE SCHEMA Security;
+GO
+CREATE FUNCTION Security.fn_TenantPredicate (@TenantID int)
+RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN SELECT 1 AS allowed
+       WHERE @TenantID = CAST(SESSION_CONTEXT(N'TenantID') AS int)
+          OR IS_MEMBER(N'db_owner') = 1;
+GO
+CREATE SECURITY POLICY Security.TenantPolicy
+    ADD FILTER PREDICATE Security.fn_TenantPredicate(TenantID) ON dbo.Orders,               -- hides rows from reads
+    ADD BLOCK  PREDICATE Security.fn_TenantPredicate(TenantID) ON dbo.Orders AFTER INSERT   -- stops writing other tenants' rows
+WITH (STATE = ON);
+GO
+-- The application sets the tenant once per connection
+EXECUTE sys.sp_set_session_context @key = N'TenantID', @value = 42, @read_only = 1;`;
+
+const perms = `-- Least privilege through roles and schemas, not individual users and objects
+CREATE ROLE app_reader;
+GRANT SELECT ON SCHEMA::Sales TO app_reader;                -- every current and future object in the schema
+CREATE ROLE app_writer;
+GRANT EXECUTE ON SCHEMA::Api TO app_writer;                 -- procedures only; no direct table access
+DENY  SELECT ON dbo.Salary TO app_reader;                   -- DENY wins over any GRANT
+
+-- Passwordless: a contained user for an app's managed identity (Entra ID)
+CREATE USER [contoso-orders-api] FROM EXTERNAL PROVIDER;
+ALTER ROLE app_writer ADD MEMBER [contoso-orders-api];`;
+
+const mi = `-- Secure a model endpoint with the database's managed identity (no API key in the database).
+-- Grant the identity the "Cognitive Services OpenAI User" role on the Azure OpenAI / Foundry resource first.
+-- Azure SQL Database and Fabric: the logical server's / item's identity.
+-- SQL Server 2025: connect the server to Azure Arc and enable its primary managed identity, then
+--   EXECUTE sp_configure 'allow server scoped db credentials', 1; RECONFIGURE;
+CREATE DATABASE SCOPED CREDENTIAL [https://contoso-ai.openai.azure.com/]
+    WITH IDENTITY = 'Managed Identity',
+         SECRET   = '{"resourceid":"https://cognitiveservices.azure.com"}';
+
+CREATE EXTERNAL MODEL EmbeddingModel
+WITH (
+    LOCATION   = 'https://contoso-ai.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01',
+    API_FORMAT = 'Azure OpenAI',
+    MODEL_TYPE = EMBEDDINGS,
+    MODEL      = 'text-embedding-3-small',
+    CREDENTIAL = [https://contoso-ai.openai.azure.com/]
+);
+GRANT EXECUTE ON EXTERNAL MODEL::EmbeddingModel TO app_writer;`;
+
+const audit = `-- SQL Server / Azure SQL MI: server audit + database audit specification
+CREATE SERVER AUDIT AuditToFile TO FILE (FILEPATH = N'D:\\Audit\\');
+ALTER SERVER AUDIT AuditToFile WITH (STATE = ON);
+
+CREATE DATABASE AUDIT SPECIFICATION PatientAccess
+FOR SERVER AUDIT AuditToFile
+    ADD (SELECT, UPDATE ON dbo.Patient BY public),
+    ADD (DATABASE_ROLE_MEMBER_CHANGE_GROUP)
+WITH (STATE = ON);
+
+-- Read the logs (SQL Server, MI, Azure SQL Database and Fabric all expose this function family)
+SELECT event_time, action_id, server_principal_name, statement
+FROM sys.fn_get_audit_file(N'D:\\Audit\\*.sqlaudit', DEFAULT, DEFAULT);`;
+
+const isolation = `-- Reader sees the last committed version instead of waiting for writers
+ALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON;      -- on by default in Azure SQL Database
+
+-- Transaction-level SNAPSHOT: one consistent view for the whole transaction
+ALTER DATABASE CURRENT SET ALLOW_SNAPSHOT_ISOLATION ON;
+SET TRANSACTION ISOLATION LEVEL SNAPSHOT;
+BEGIN TRANSACTION;
+    SELECT SUM(Balance) FROM dbo.Account;                   -- stable for the whole transaction
+COMMIT;
+
+-- Pessimistic read-then-update without a lost update: lock the row you read
+BEGIN TRANSACTION;
+    SELECT Quantity FROM dbo.Stock WITH (UPDLOCK, HOLDLOCK) WHERE ProductID = 42;
+    UPDATE dbo.Stock SET Quantity -= 1 WHERE ProductID = 42;
+COMMIT;
+
+-- Optimistic concurrency with rowversion
+UPDATE dbo.Product SET ListPrice = @NewPrice
+WHERE ProductID = @ID AND RowVer = @RowVerReadEarlier;
+IF @@ROWCOUNT = 0 THROW 50001, 'The row was changed by someone else.', 1;`;
+
+const dmvs = `-- What is running now, and who is blocking whom?
+SELECT r.session_id, r.blocking_session_id, r.wait_type, r.wait_time, r.cpu_time,
+       t.text AS sql_text
+FROM sys.dm_exec_requests AS r
+CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) AS t
+WHERE r.session_id <> @@SPID;
+
+-- Most expensive cached statements by CPU
+SELECT TOP (10) qs.total_worker_time / qs.execution_count AS avg_cpu, qs.execution_count,
+       SUBSTRING(t.text, qs.statement_start_offset / 2 + 1, 200) AS stmt, qp.query_plan
+FROM sys.dm_exec_query_stats AS qs
+CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) AS t
+CROSS APPLY sys.dm_exec_query_plan(qs.plan_handle) AS qp
+ORDER BY avg_cpu DESC;
+
+-- Azure SQL Database: resource use in 15-second intervals for the last hour
+SELECT end_time, avg_cpu_percent, avg_data_io_percent, avg_log_write_percent
+FROM sys.dm_db_resource_stats ORDER BY end_time DESC;`;
+
+const qs = `-- Query Store: on by default in Azure SQL Database and new SQL Server 2022+ databases
+ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE);
+
+-- Find a regressed query and its plans
+SELECT q.query_id, p.plan_id, rs.avg_duration, rs.last_execution_time
+FROM sys.query_store_query AS q
+JOIN sys.query_store_plan AS p           ON p.query_id = q.query_id
+JOIN sys.query_store_runtime_stats AS rs ON rs.plan_id = p.plan_id
+WHERE q.query_id = 1234
+ORDER BY rs.avg_duration;
+
+-- Fix it without touching the application
+EXECUTE sp_query_store_force_plan @query_id = 1234, @plan_id = 17;                     -- pin the good plan
+EXECUTE sp_query_store_set_hints  @query_id = 1234, @query_hints = N'OPTION (RECOMPILE)'; -- or add a hint`;
+
+const sqlproj = `<!-- An SDK-style SQL project: every .sql file under the folder is included by default -->
+<Project DefaultTargets="Build">
+  <Sdk Name="Microsoft.Build.Sql" Version="2.3.0" />
+  <PropertyGroup>
+    <Name>Contoso.Database</Name>
+    <DSP>Microsoft.Data.Tools.Schema.Sql.SqlAzureV12DatabaseSchemaProvider</DSP>
+    <RunSqlCodeAnalysis>True</RunSqlCodeAnalysis>
+  </PropertyGroup>
+  <ItemGroup>
+    <PostDeploy Include="Scripts\\PostDeployment.sql" />
+  </ItemGroup>
+</Project>`;
+
+const staticData = `-- Scripts/PostDeployment.sql — idempotent reference data, runs after every publish
+MERGE dbo.OrderStatus AS target
+USING (VALUES (1, N'Placed'), (2, N'Shipped'), (3, N'Delivered'), (4, N'Cancelled'))
+      AS source (StatusID, Name)
+ON target.StatusID = source.StatusID
+WHEN MATCHED AND target.Name <> source.Name THEN UPDATE SET Name = source.Name
+WHEN NOT MATCHED BY TARGET THEN INSERT (StatusID, Name) VALUES (source.StatusID, source.Name)
+WHEN NOT MATCHED BY SOURCE THEN DELETE;`;
+
+const sqlpackage = `# Build the model and validate it
+dotnet build Contoso.Database.sqlproj -c Release      # → bin/Release/Contoso.Database.dacpac
+
+# What would a publish change? (XML report and a reviewable script)
+sqlpackage /Action:DeployReport /SourceFile:bin/Release/Contoso.Database.dacpac \\
+  /TargetConnectionString:"$TARGET" /OutputPath:deployreport.xml
+sqlpackage /Action:Script /SourceFile:bin/Release/Contoso.Database.dacpac \\
+  /TargetConnectionString:"$TARGET" /OutputPath:deploy.sql
+
+# Has anyone changed a registered database outside the pipeline?
+sqlpackage /Action:DriftReport /TargetConnectionString:"$TARGET" /OutputPath:drift.xml
+
+# Publish, refusing anything that could lose data
+sqlpackage /Action:Publish /SourceFile:bin/Release/Contoso.Database.dacpac \\
+  /TargetConnectionString:"$TARGET" /p:BlockOnPossibleDataLoss=true`;
+
+const tsqlt = `-- A tSQLt unit test: arrange with a fake table, act, assert
+EXEC tSQLt.NewTestClass 'OrderTests';
+GO
+CREATE PROCEDURE OrderTests.[test usp_PlaceOrder inserts one header]
+AS
+BEGIN
+    EXEC tSQLt.FakeTable 'dbo.OrderHeader';
+    DECLARE @no bigint;
+    EXEC dbo.usp_PlaceOrder @CustomerID = 7, @OrderNo = @no OUTPUT;
+    DECLARE @rows int = (SELECT COUNT(*) FROM dbo.OrderHeader WHERE CustomerID = 7);
+    EXEC tSQLt.AssertEquals @Expected = 1, @Actual = @rows;
+END;
+GO
+EXEC tSQLt.Run 'OrderTests';`;
+
+const ct = `-- Change Tracking: which rows changed since version N (no old values)
+ALTER DATABASE CURRENT SET CHANGE_TRACKING = ON (CHANGE_RETENTION = 2 DAYS, AUTO_CLEANUP = ON);
+ALTER TABLE dbo.Product ENABLE CHANGE_TRACKING WITH (TRACK_COLUMNS_UPDATED = ON);
+
+DECLARE @last bigint = 1520;                                  -- stored by the consumer after its last sync
+SELECT ct.ProductID, ct.SYS_CHANGE_OPERATION, ct.SYS_CHANGE_VERSION, p.Name, p.ListPrice
+FROM CHANGETABLE(CHANGES dbo.Product, @last) AS ct
+LEFT JOIN dbo.Product AS p ON p.ProductID = ct.ProductID;     -- current values; deleted rows return NULL
+SELECT CHANGE_TRACKING_CURRENT_VERSION();                     -- save as the next @last
+
+-- Change data capture: every change with before and after images
+EXEC sys.sp_cdc_enable_db;
+EXEC sys.sp_cdc_enable_table @source_schema = N'dbo', @source_name = N'Product', @role_name = NULL;
+SELECT * FROM cdc.fn_cdc_get_all_changes_dbo_Product(
+    sys.fn_cdc_get_min_lsn('dbo_Product'), sys.fn_cdc_get_max_lsn(), N'all update old');`;
+
+const ces = `-- Change event streaming (preview): publish row changes as CloudEvents
+-- SQL Server 2025 needs PREVIEW_FEATURES and the FULL recovery model; Azure SQL is always FULL.
+EXEC sys.sp_enable_event_stream;
+EXEC sys.sp_create_event_stream_group
+     @stream_group_name      = N'ordersStream',
+     @destination_type       = N'AzureEventHubsApacheKafka',   -- SQL Server 2025 / MI; 'AzureEventHubs' on Azure SQL Database and Fabric
+     @destination_location   = N'contoso-ns.servicebus.windows.net:9093/orders',
+     @destination_credential = CesEventHubsCredential,          -- a database scoped credential
+     @partition_key_scheme   = N'Table',
+     @encoding               = N'JSON';
+EXEC sys.sp_add_object_to_event_stream_group
+     @stream_group_name = N'ordersStream', @object_name = N'dbo.Orders';
+SELECT * FROM sys.dm_change_feed_errors;   -- delivery errors`;
+---
+
+<NoteLayout
+  slug="skill-2-secure-optimize-deploy"
+  description="DP-800 Skill 2 (35–40%): Always Encrypted and column encryption, dynamic data masking, row-level security, permissions, passwordless access, auditing and securing model, REST, GraphQL and MCP endpoints; configuration, isolation levels, plans, DMVs, Query Store, blocking and deadlocks; CI/CD with SQL Database Projects; Data API builder, Azure Monitor and change handling."
+  intro="The other 35–40% area, and the widest. It joins four jobs a database developer owns end to end: protect the data, keep queries fast and correct under concurrency, ship schema changes through a pipeline, and connect the database to Azure — Data API builder, Azure Monitor and the right change-handling mechanism."
+>
+  <Callout type="exam" title="What this skill tests">
+    <p>
+      Four objective groups: <strong>data security and compliance</strong>, <strong>database performance</strong>,
+      <strong>CI/CD with SQL Database Projects</strong> and <strong>integration with Azure services</strong>. Most items
+      are "which feature meets this requirement" — and the distractors are features that sound right but protect a
+      different thing (masking is not encryption; Change Tracking does not keep old values).
+    </p>
+  </Callout>
+
+  <h2 id="data-security-and-compliance">Data security and compliance</h2>
+  <Mermaid code={layers} caption="Security in depth. Each layer answers a different question; an exam scenario usually names the layer through its requirement — 'administrators must not see', 'tenants must only see their rows', 'no passwords in the app'." />
+
+  <h3 id="encryption">Encryption: Always Encrypted, column-level and TDE</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th></th><th>Always Encrypted</th><th>Column-level encryption</th><th>Transparent data encryption (TDE)</th></tr></thead>
+      <tbody>
+        <tr><td>Where encryption happens</td><td>In the client driver</td><td>In the engine, by your T-SQL</td><td>In the engine, at the storage layer</td></tr>
+        <tr><td>Who can see plaintext</td><td>Only clients holding the column master key — <strong>not DBAs or the cloud operator</strong></td><td>Anyone who can open the key</td><td>Anyone who can query the table</td></tr>
+        <tr><td>Protects against</td><td>Privileged insiders, compromised servers</td><td>Casual access to selected columns</td><td>Stolen files and backups (data at rest)</td></tr>
+        <tr><td>Application changes</td><td>Connection string setting, parameterized queries</td><td>Queries must call <code>ENCRYPTBYKEY</code>/<code>DECRYPTBYKEY</code></td><td>None</td></tr>
+        <tr><td>Platforms</td><td>SQL Server, Azure SQL DB, MI — <strong>not Fabric</strong></td><td>All four</td><td>On by default in Azure SQL; Fabric encrypts storage with service-managed or workspace keys</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={ae} />
+  <ul>
+    <li><strong>Deterministic</strong> encryption allows equality, joins, <code>GROUP BY</code> and indexes, but leaks repeating values; needs a <code>BIN2</code> collation on strings.</li>
+    <li><strong>Randomized</strong> is stronger but allows no operations — unless you use <strong>Always Encrypted with secure enclaves</strong>, which lets the server evaluate comparisons, <code>LIKE</code> and range queries inside a protected enclave.</li>
+    <li>Keys: the <strong>column master key</strong> (CMK) lives outside the database, typically in Azure Key Vault; it encrypts the <strong>column encryption keys</strong> (CEKs) stored in the database.</li>
+  </ul>
+  <CodeBlock code={cle} />
+
+  <h3 id="dynamic-data-masking">Dynamic data masking</h3>
+  <p>
+    Masking changes what <strong>query results</strong> show to users without the <code>UNMASK</code> permission; the
+    stored data is unchanged. It reduces exposure in applications and support tools but is <strong>not a security
+    boundary</strong> — a user with ad hoc query access can infer values with predicates such as
+    <code>WHERE CreditLimit &gt; 10000</code>.
+  </p>
+  <CodeBlock code={ddm} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Granular UNMASK at schema, table or column level needs SQL Server 2022 or later, Azure SQL or Fabric." />
+
+  <h3 id="row-level-security">Row-level security</h3>
+  <p>
+    RLS filters rows by the <strong>caller's context</strong> — a user name, a role, or a value the app puts in
+    <code>SESSION_CONTEXT</code>. A <strong>filter predicate</strong> silently hides rows from
+    <code>SELECT</code>, <code>UPDATE</code> and <code>DELETE</code>; a <strong>block predicate</strong> stops writes that
+    would violate the rule (<code>AFTER INSERT</code>, <code>AFTER UPDATE</code>, <code>BEFORE UPDATE</code>,
+    <code>BEFORE DELETE</code>).
+  </p>
+  <CodeBlock code={rls} />
+  <Callout type="exam" title="RLS traps">
+    <ul>
+      <li>The predicate is an <strong>inline table-valued function</strong> created <code>WITH SCHEMABINDING</code>.</li>
+      <li>Without a block predicate, a user can insert rows they can then no longer see.</li>
+      <li>With a shared connection pool, set <code>SESSION_CONTEXT</code> with <code>@read_only = 1</code> on every connection open, or tenants can impersonate each other.</li>
+      <li>Index the predicate column — the filter is added to every query.</li>
+    </ul>
+  </Callout>
+
+  <h3 id="object-level-permissions">Object-level permissions</h3>
+  <p>
+    Grant to <strong>roles</strong>, at the <strong>schema</strong> level where you can, and prefer
+    <code>EXECUTE</code> on procedures over table permissions. <code>DENY</code> overrides any <code>GRANT</code>;
+    <code>REVOKE</code> removes a grant or a deny. <strong>Ownership chaining</strong> lets a procedure read tables its
+    caller has no rights on when both have the same owner, and <code>EXECUTE AS</code> runs a module under another
+    principal (not available in Fabric).
+  </p>
+  <CodeBlock code={perms} />
+
+  <h3 id="passwordless-access">Secure, passwordless database access</h3>
+  <ul>
+    <li>
+      <strong>Microsoft Entra authentication</strong> for people and workloads; <strong>Entra-only authentication</strong>
+      turns SQL authentication off at the server or instance (and is the only option in Fabric).
+    </li>
+    <li>
+      <strong>Managed identities</strong> for Azure-hosted apps (App Service, Container Apps, Functions): create a
+      contained user <code>FROM EXTERNAL PROVIDER</code> and connect with
+      <code>Authentication=Active Directory Managed Identity</code> or <code>Active Directory Default</code> — no secret in
+      the connection string or in Key Vault.
+    </li>
+    <li>
+      <strong>Network:</strong> server firewall rules, private endpoints, and "deny public network access" when only
+      private traffic should reach the database.
+    </li>
+  </ul>
+
+  <h3 id="auditing">Auditing</h3>
+  <div class="table-wrap">
+    <table class="tbl t-slate">
+      <thead><tr><th>Platform</th><th>Feature</th><th>Destinations</th></tr></thead>
+      <tbody>
+        <tr><td>SQL Server 2025</td><td>SQL Server Audit — server audit plus server or database audit specifications</td><td>File, Windows Application or Security log</td></tr>
+        <tr><td>Azure SQL MI</td><td>SQL Server Audit</td><td>Azure Blob storage, Log Analytics, Event Hubs</td></tr>
+        <tr><td>Azure SQL Database</td><td>Azure SQL auditing, at server level (all databases) or database level</td><td>Azure Storage, Log Analytics, Event Hubs</td></tr>
+        <tr><td>SQL database in Fabric</td><td>SQL auditing, configured in <strong>Security → Manage SQL auditing</strong></td><td>The item's read-only OneLake folder; read with <code>sys.fn_get_audit_file_v2</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={audit} label="T-SQL · SQL Server / MI" />
+
+  <h3 id="secure-model-endpoints">Secure model endpoints with managed identity</h3>
+  <p>
+    An external model call leaves the database over HTTPS, so its credential matters. Prefer a <strong>database scoped
+    credential with <code>IDENTITY = 'Managed Identity'</code></strong> over an API key in
+    <code>HTTPEndpointHeaders</code>; grant the database's identity an RBAC role on the model resource; and grant
+    <code>EXECUTE</code> on the external model only to the roles that need it. The credential name must be the
+    endpoint URL (or a prefix of it).
+  </p>
+  <CodeBlock code={mi} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Managed identity on SQL Server 2025 requires Azure Arc. CREATE EXTERNAL MODEL on MI needs the Always-up-to-date update policy." />
+
+  <h3 id="secure-graphql-rest-and-mcp-endpoints">Secure GraphQL, REST and MCP endpoints</h3>
+  <p>Data API builder serves all three surfaces from one configuration, so the same controls protect all three:</p>
+  <dl class="terms">
+    <dt>Authentication provider (<code>runtime.host.authentication.provider</code>)</dt>
+    <dd>
+      <code>EntraId</code> (formerly <code>AzureAd</code>) or <code>Custom</code> validate JWT bearer tokens;
+      <code>AppService</code> trusts EasyAuth headers; <code>Unauthenticated</code> (the default in DAB 2.x) treats every
+      call as <code>anonymous</code>; <code>Simulator</code> works only in development mode.
+    </dd>
+    <dt>Roles and permissions</dt>
+    <dd>
+      No role has permissions by default. Each entity lists roles (<code>anonymous</code>, <code>authenticated</code> or a
+      custom role chosen with the <code>X-MS-API-ROLE</code> header) and their actions — <code>create</code>,
+      <code>read</code>, <code>update</code>, <code>delete</code>, <code>execute</code> — with field-level
+      <code>include</code>/<code>exclude</code>.
+    </dd>
+    <dt>Database policies</dt>
+    <dd>Row filters such as <code>@item.OwnerId eq @claims.oid</code> appended to the query for a role and action.</dd>
+    <dt>Identity to the database</dt>
+    <dd>DAB connects with a managed identity; with on-behalf-of (OBO) it passes the user's identity so RLS and auditing see the real user.</dd>
+    <dt>MCP specifically</dt>
+    <dd>Disable DML tools you do not need (<code>runtime.mcp.dml-tools.delete-record: false</code>) and opt sensitive entities out with <code>"mcp": false</code>.</dd>
+  </dl>
+  <p>Samples for each are in the <a href={`${href('config-reference')}#dab-config-json`}>Configuration reference</a>.</p>
+
+  <h2 id="optimize-database-performance">Optimize database performance</h2>
+
+  <h3 id="recommend-database-configurations">Recommend database configurations</h3>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead><tr><th>Setting</th><th>Recommendation</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Compatibility level</td><td>Latest (170) after testing</td><td>Unlocks new functions and intelligent query processing; use Query Store to catch regressions</td></tr>
+        <tr><td>Query Store</td><td>On, <code>READ_WRITE</code></td><td>History of plans and runtime stats; needed for plan forcing and hints</td></tr>
+        <tr><td><code>READ_COMMITTED_SNAPSHOT</code></td><td>On for OLTP</td><td>Readers stop blocking writers (default in Azure SQL Database)</td></tr>
+        <tr><td>Accelerated database recovery + optimized locking</td><td>On</td><td>Fast rollback; fewer locks held, less blocking and no lock escalation (on by default in Azure SQL Database)</td></tr>
+        <tr><td><code>MAXDOP</code> (database scoped)</td><td>8 or fewer, by workload</td><td>Caps parallelism per query</td></tr>
+        <tr><td>Automatic tuning</td><td><code>FORCE_LAST_GOOD_PLAN</code> on</td><td>Reverts plan-choice regressions automatically (Azure SQL; SQL Server via Query Store)</td></tr>
+        <tr><td>Statistics</td><td>Auto create and auto update on, async update for latency-sensitive OLTP</td><td>Fresh cardinality estimates</td></tr>
+        <tr><td>Azure SQL service tier</td><td>Serverless for intermittent use, Hyperscale for large or fast-growing data, Business Critical for low-latency I/O and In-Memory OLTP</td><td>Capacity matches the workload</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="isolation-levels-and-concurrency">Isolation levels and concurrency controls</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Isolation level</th><th>Dirty reads</th><th>Non-repeatable reads</th><th>Phantoms</th><th>How it works</th></tr></thead>
+      <tbody>
+        <tr><td><code>READ UNCOMMITTED</code></td><td>Yes</td><td>Yes</td><td>Yes</td><td>No shared locks (<code>NOLOCK</code>)</td></tr>
+        <tr><td><code>READ COMMITTED</code> (locking)</td><td>No</td><td>Yes</td><td>Yes</td><td>Short shared locks; readers wait for writers</td></tr>
+        <tr><td><code>READ COMMITTED</code> with RCSI</td><td>No</td><td>Yes</td><td>Yes</td><td>Statement-level row versions; readers don't block</td></tr>
+        <tr><td><code>REPEATABLE READ</code></td><td>No</td><td>No</td><td>Yes</td><td>Shared locks held to the end of the transaction</td></tr>
+        <tr><td><code>SNAPSHOT</code></td><td>No</td><td>No</td><td>No</td><td>Transaction-level row versions; update conflicts raise error 3960</td></tr>
+        <tr><td><code>SERIALIZABLE</code></td><td>No</td><td>No</td><td>No</td><td>Key-range locks (<code>HOLDLOCK</code>); most blocking</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={isolation} />
+  <Callout type="note" title="Optimized locking">
+    <p>
+      Optimized locking (requires accelerated database recovery) replaces row and page locks held to the end of a
+      transaction with a single <strong>transaction ID lock</strong>, and with RCSI adds <strong>lock after
+      qualification</strong> — rows are evaluated against the latest committed version before any lock is taken. The
+      result is less blocking, lower lock memory and no lock escalation.
+    </p>
+  </Callout>
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Enabled by default in Azure SQL Database. MI needs the SQL Server 2025 or Always-up-to-date update policy; on SQL Server 2025 you turn it on per database." />
+
+  <h3 id="evaluate-query-performance">Evaluate query performance</h3>
+  <ul>
+    <li>
+      <strong>Execution plans:</strong> the <em>estimated</em> plan shows the optimizer's choice; the <em>actual</em> plan
+      adds row counts, warnings and spills. Look for estimate-versus-actual gaps, key lookups, scans where seeks were
+      expected, implicit conversions (a <code>CONVERT_IMPLICIT</code> on a column defeats an index), and tempdb spills.
+    </li>
+    <li>
+      <strong>Statement statistics:</strong> <code>SET STATISTICS IO, TIME ON</code> for logical reads and CPU;
+      <em>Live Query Statistics</em> for a running query.
+    </li>
+    <li>
+      <strong>DMVs</strong> for what is happening now and since the last restart: <code>sys.dm_exec_requests</code>,
+      <code>sys.dm_exec_sessions</code>, <code>sys.dm_exec_query_stats</code>, <code>sys.dm_os_wait_stats</code> (or
+      <code>sys.dm_db_wait_stats</code> in Azure SQL Database), <code>sys.dm_tran_locks</code>,
+      <code>sys.dm_db_index_usage_stats</code> and the missing-index DMVs.
+    </li>
+    <li>
+      <strong>Query Store</strong> for history that survives restarts: regressed queries, top resource consumers, plan
+      forcing and Query Store hints.
+    </li>
+    <li>
+      <strong>Query Performance Insight</strong> — Azure SQL Database only — is a portal view over Query Store: top
+      queries by CPU, duration and execution count. In Fabric the equivalent is the <strong>Performance
+      Dashboard</strong>.
+    </li>
+  </ul>
+  <CodeBlock code={dmvs} />
+  <CodeBlock code={qs} />
+
+  <h3 id="blocking-and-deadlocks">Blocking and deadlocks</h3>
+  <p>
+    <strong>Blocking</strong> is one session waiting for a lock another holds — find the head blocker through
+    <code>blocking_session_id</code> chains. A <strong>deadlock</strong> is a cycle; the engine kills the cheapest victim
+    with error <strong>1205</strong>. Capture deadlock graphs from the <code>system_health</code> Extended Events session
+    (SQL Server, MI), a database-scoped XE session or the <em>Deadlocks</em> diagnostic setting (Azure SQL Database).
+  </p>
+  <ol class="steps">
+    <li>Keep transactions short and never wait for user input inside one.</li>
+    <li>Access objects in the <strong>same order</strong> in every code path.</li>
+    <li>Index to turn scans into seeks, so fewer rows are locked.</li>
+    <li>Turn on RCSI (and optimized locking) so readers stop taking shared locks.</li>
+    <li>Retry on 1205 in the application, and use <code>SET DEADLOCK_PRIORITY</code> or <code>SET LOCK_TIMEOUT</code> where one side should always yield.</li>
+  </ol>
+
+  <h2 id="cicd-with-sql-database-projects">CI/CD with SQL Database Projects</h2>
+  <p>
+    A SQL database project is the <strong>declarative</strong> source of truth: one <code>CREATE</code> script per object,
+    built into a <code>.dacpac</code> model. Deployment compares the model with the target and generates the
+    <code>ALTER</code> script — you never hand-write migrations for schema.
+  </p>
+  <Mermaid code={pipeline} caption="A typical GitHub Actions flow: validate and test on every pull request, deploy the same .dacpac artifact to each environment, and gate production with an environment that requires reviewers." />
+
+  <h3 id="sdk-style-projects">Create, build and validate SDK-style projects</h3>
+  <CodeBlock code={sqlproj} lang="xml" label=".sqlproj" />
+  <ul>
+    <li><strong><code>Microsoft.Build.Sql</code></strong> (2.3.0 at the time of writing) is the SDK-style format; it builds cross-platform with <code>dotnet build</code> and uses NuGet package references for database references.</li>
+    <li>The <strong>target platform</strong> is the <code>DSP</code> property: <code>Sql170DatabaseSchemaProvider</code> (SQL Server 2025), <code>SqlAzureV12DatabaseSchemaProvider</code> (Azure SQL Database), <code>SqlDbFabricDatabaseSchemaProvider</code> (SQL database in Fabric, preview). Publishing to a different platform fails unless you pass <code>/p:AllowIncompatiblePlatform=true</code>.</li>
+    <li><strong>Build</strong> validates every reference and syntax error; <code>RunSqlCodeAnalysis</code> adds static analysis rules.</li>
+    <li>VS Code (SQL Database Projects in the MSSQL extension) supports SDK-style projects GA; Visual Studio 2022 has them in preview, and Visual Studio 2026 only supports the original format.</li>
+    <li>SQL database in Fabric's built-in <strong>Git integration</strong> stores the database as an SDK-style project, one file per object under <code>schema/ObjectType/</code>.</li>
+  </ul>
+
+  <h3 id="testing-strategy">Testing strategy</h3>
+  <div class="table-wrap">
+    <table class="tbl t-purple">
+      <thead><tr><th>Test level</th><th>What it proves</th><th>How</th></tr></thead>
+      <tbody>
+        <tr><td>Build and static analysis</td><td>The model compiles; no broken references or rule violations</td><td><code>dotnet build</code> with code analysis, on every PR</td></tr>
+        <tr><td>Unit tests</td><td>One procedure, function or trigger behaves correctly in isolation</td><td>tSQLt: fake tables, act, assert, inside a rolled-back transaction</td></tr>
+        <tr><td>Integration tests</td><td>The deployed schema works with the app and real data shapes</td><td>Publish the <code>.dacpac</code> to an ephemeral database (a SQL Server container service in the workflow), then run the app's tests</td></tr>
+        <tr><td>Deployment tests</td><td>The upgrade path is safe for existing data</td><td><code>DeployReport</code>/<code>Script</code> against a copy of production; <code>BlockOnPossibleDataLoss</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={tsqlt} />
+
+  <h3 id="reference-and-static-data">Reference and static data in source control</h3>
+  <p>
+    Lookup values (status codes, countries) belong in the project as an idempotent <strong>post-deployment
+    script</strong> — usually a <code>MERGE</code> from a <code>VALUES</code> list — so every environment converges on the
+    same rows. A <strong>pre-deployment</strong> script handles data that must move before schema changes (splitting a
+    column, for example). Transactional data never belongs in the project.
+  </p>
+  <CodeBlock code={staticData} />
+
+  <h3 id="source-control-branching-and-pull-requests">Source control, branching and pull requests</h3>
+  <ul>
+    <li><strong>Commit</strong> the <code>.sqlproj</code>, the object scripts, pre/post-deployment scripts and publish profiles without secrets; ignore <code>bin/</code> and <code>obj/</code>.</li>
+    <li><strong>Branch</strong> per feature, merge to <code>main</code> through a pull request that must pass the build and tests.</li>
+    <li><strong>Conflicts</strong> are rare because each object is its own file; when two branches change the same object, resolve the script, rebuild and re-run tests. Renames go through the project's refactor so a <code>.refactorlog</code> tells deployment to <code>sp_rename</code> instead of drop-and-create.</li>
+  </ul>
+
+  <h3 id="secrets-management">Secrets management</h3>
+  <ul>
+    <li>Authenticate the workflow to Azure with <strong>OpenID Connect</strong> (<code>azure/login</code> with a federated credential) — no client secret stored at all.</li>
+    <li>Keep any remaining values in <strong>GitHub secrets</strong>, preferably <strong>environment secrets</strong> so only the gated job can read them; or in Azure Key Vault.</li>
+    <li>Deploy with Entra authentication to the database; never put a password in a publish profile or <code>.sqlproj</code>, and use SQLCMD variables for per-environment values.</li>
+  </ul>
+
+  <h3 id="schema-drift">Detect schema drift</h3>
+  <p>
+    Drift is a target that no longer matches what the pipeline last deployed — a hotfix applied by hand, an index added
+    in production.
+  </p>
+  <dl class="terms">
+    <dt><code>sqlpackage /Action:DriftReport</code></dt>
+    <dd>Reports changes made to a <strong>registered</strong> database since it was last registered (publish with <code>/p:RegisterDataTierApplication=true</code>).</dd>
+    <dt><code>/p:BlockWhenDriftDetected=true</code> (default)</dt>
+    <dd>Blocks a publish to a registered database whose schema no longer matches its registration.</dd>
+    <dt><code>DeployReport</code> and schema compare</dt>
+    <dd>Compare the project with any target — the usual drift check in a scheduled workflow for unregistered databases.</dd>
+  </dl>
+
+  <h3 id="update-and-deploy">Update a project and deploy changes</h3>
+  <p>
+    Change the object scripts (or apply a schema compare from a database into the project), build, then publish. In
+    GitHub Actions <code>azure/sql-action@v2</code> builds a <code>.sqlproj</code> or takes a <code>.dacpac</code> and runs
+    SqlPackage for you. The full workflow is in the
+    <a href={`${href('config-reference')}#github-actions-deploy-workflow`}>Configuration reference</a>.
+  </p>
+  <CodeBlock code={sqlpackage} lang="bash" label="bash" />
+
+  <h3 id="pipeline-controls">Controls for deployment pipelines</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Control</th><th>Where</th><th>What it enforces</th></tr></thead>
+      <tbody>
+        <tr><td>Branch protection rules or rulesets</td><td>Repository settings</td><td>Changes reach <code>main</code> only through a PR with required status checks and approvals; no force-push</td></tr>
+        <tr><td><code>CODEOWNERS</code></td><td><code>.github/CODEOWNERS</code></td><td>The DBA team must review any change under, say, <code>/database/</code></td></tr>
+        <tr><td>Triggers</td><td><code>on:</code> in the workflow</td><td><code>pull_request</code> to validate, <code>push</code> to <code>main</code> to deploy, <code>paths</code> filters, <code>workflow_dispatch</code> for manual runs</td></tr>
+        <tr><td>Environments with approvals</td><td>Settings → Environments</td><td>Required reviewers, wait timer, deployment branch rules and environment-scoped secrets before a job targeting <code>production</code> runs</td></tr>
+        <tr><td>Authentication</td><td><code>permissions: id-token: write</code> + <code>azure/login</code></td><td>Short-lived OIDC tokens scoped to the environment</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <Callout type="note" title="An odd phrase in the study guide">
+    <p>
+      The objective lists "branching policies, triggers in approvals, <strong>authentication tables</strong>, and code
+      owners". There is no GitHub feature called an authentication table; read it as the authentication used by the
+      pipeline (OIDC federated credentials, environment secrets) and you will match what the course teaches.
+    </p>
+  </Callout>
+
+  <h2 id="integrate-with-azure-services">Integrate SQL solutions with Azure services</h2>
+
+  <h3 id="data-api-builder">Data API builder</h3>
+  <p>
+    Data API builder (DAB) is an open-source, configuration-driven engine that exposes tables, views and stored
+    procedures as <strong>REST</strong> (<code>/api</code>), <strong>GraphQL</strong> (<code>/graphql</code>) and
+    <strong>MCP</strong> (<code>/mcp</code>) endpoints — no API code. Everything lives in <code>dab-config.json</code>,
+    created and edited with the <code>dab</code> CLI.
+  </p>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead><tr><th>Objective</th><th>What to configure</th></tr></thead>
+      <tbody>
+        <tr><td>Create the configuration file</td><td><code>dab init --database-type mssql --connection-string "@env('SQL_CONN')"</code>; never a literal connection string</td></tr>
+        <tr><td>Entities for REST and GraphQL</td><td><code>dab add Product --source dbo.Product --permissions "anonymous:read"</code>; <code>rest.path</code>, <code>graphql.type</code> singular/plural, <code>mappings</code> to rename columns</td></tr>
+        <tr><td>Caching</td><td><code>runtime.cache</code> plus per-entity <code>cache.enabled</code> and <code>ttl-seconds</code> for read results</td></tr>
+        <tr><td>Pagination</td><td><code>$first</code>/<code>$after</code> (REST) and <code>first</code>/<code>after</code> (GraphQL); <code>runtime.pagination.default-page-size</code> (100) and <code>max-page-size</code> (100,000); <code>-1</code> asks for the maximum</td></tr>
+        <tr><td>Searching and filtering</td><td>REST <code>$filter</code> (<code>eq</code>, <code>ne</code>, <code>gt</code>, <code>ge</code>, <code>lt</code>, <code>le</code>, <code>and</code>, <code>or</code>, <code>not</code>), <code>$orderby</code>, <code>$select</code>; GraphQL <code>filter</code> with operators such as <code>contains</code>, <code>startsWith</code>, <code>isNull</code></td></tr>
+        <tr><td>Stored procedures and views</td><td>Views need <code>key-fields</code>; procedures set <code>rest.methods</code> and <code>graphql.operation</code> (<code>query</code> or <code>mutation</code>)</td></tr>
+        <tr><td>GraphQL relationships</td><td><code>relationships</code> with <code>cardinality</code> one/many, <code>target.entity</code>, source/target fields, and a <code>linking.object</code> for many-to-many</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h4 id="dab-deployment">Deploy Data API builder</h4>
+  <ul>
+    <li><strong>Azure Container Apps</strong> (the common choice) or App Service, running the DAB container image with the config file mounted or baked in.</li>
+    <li>Set <code>runtime.host.mode</code> to <code>production</code> (no Simulator, no GraphQL introspection UI by default), configure CORS and the authentication provider.</li>
+    <li>Give the container a <strong>managed identity</strong> and connect to SQL with it; read any remaining values from environment variables or Key Vault references.</li>
+    <li>Turn on Application Insights or OpenTelemetry in <code>runtime.telemetry</code>.</li>
+  </ul>
+
+  <h3 id="azure-monitor">Azure Monitor configurations</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Need</th><th>Recommend</th></tr></thead>
+      <tbody>
+        <tr><td>Database metrics and alerts (CPU, DTU/vCore %, storage, deadlocks, availability)</td><td>Azure Monitor <strong>metrics</strong> with metric alert rules and action groups</td></tr>
+        <tr><td>Query and wait diagnostics retained and queryable with KQL</td><td><strong>Diagnostic settings</strong> sending SQLInsights, QueryStoreRuntimeStatistics, QueryStoreWaitStatistics, Errors, Timeouts, Blocks and Deadlocks to a <strong>Log Analytics</strong> workspace</td></tr>
+        <tr><td>Application-side telemetry (API latency, failures, dependency calls to SQL)</td><td><strong>Application Insights</strong> on the app or on Data API builder</td></tr>
+        <tr><td>Fleet-wide, near-real-time SQL monitoring</td><td><strong>Database watcher</strong> (Azure SQL Database and MI), storing data in Azure Data Explorer or a Fabric Eventhouse</td></tr>
+        <tr><td>Long-term or compliance archive</td><td>Diagnostic settings to a Storage account; streaming to Event Hubs for a SIEM</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="handle-changes">Handle changes</h3>
+  <Mermaid code={changes} caption="Pick a mechanism from what the consumer needs: a pushed event, the before-and-after values, or simply which rows changed and some code to run." />
+  <div class="table-wrap">
+    <table class="tbl t-orange">
+      <thead><tr><th>Mechanism</th><th>Captures</th><th>Delivery</th><th>Platform line</th></tr></thead>
+      <tbody>
+        <tr><td>Change event streaming (CES)</td><td>Each row change with old and new values, as a CloudEvent (JSON or Avro)</td><td>Pushed in near real time to Azure Event Hubs or Fabric Eventstream (Kafka protocol; AMQP deprecated from 15 August 2026)</td><td><span class="pill p-amber">Preview</span> on all four</td></tr>
+        <tr><td>Change data capture (CDC)</td><td>Every change, before and after images, in change tables</td><td>Pulled by LSN range (<code>cdc.fn_cdc_get_all_changes_…</code>); capture and cleanup jobs</td><td>SQL Server, MI, Azure SQL DB S3+; <strong>not Fabric</strong></td></tr>
+        <tr><td>Change Tracking</td><td>Which rows changed (key and operation), not old values</td><td>Pulled with <code>CHANGETABLE(CHANGES …)</code> since a saved version</td><td>All</td></tr>
+        <tr><td>Azure Functions SQL trigger binding</td><td>Row changes detected through Change Tracking</td><td>Function invoked with batches of changed rows; leases kept in an <code>az_func</code> schema</td><td>Needs Change Tracking on the database and table</td></tr>
+        <tr><td>Azure Logic Apps SQL connector</td><td>New or modified rows, by polling</td><td>Workflow trigger "When an item is created" or "modified"</td><td>Needs an identity column (created) or a <code>rowversion</code> column (modified)</td></tr>
+        <tr><td>Table trigger</td><td>Synchronous, inside the transaction</td><td>Runs T-SQL immediately</td><td>All — but adds latency to every write</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={ct} />
+  <CodeBlock code={ces} label="T-SQL · CES preview" />
+  <Callout type="exam" title="The classic distractor">
+    <p>
+      "Downstream needs the <em>previous</em> value of the price" rules out Change Tracking and the Functions SQL
+      trigger (both report <em>that</em> a row changed and give you its current values). Choose CDC to pull history, or CES
+      to push each change as an event.
+    </p>
+  </Callout>
+</NoteLayout>

@@ -1,0 +1,64 @@
+---
+import { SITE } from '../data/site';
+import { asset, href } from '../lib/urls';
+import FluentIcon from './FluentIcon.astro';
+import Search from './Search.astro';
+
+/**
+ * Top bar: the drawer control, the wordmark, search and the Star link — and
+ * nothing else. Styled like the DP-700 v2 bar: a sticky 60px strip on a
+ * translucent surface with a saturated blur behind it, the 30px sunrise logo and
+ * Fluent-style bordered icon buttons.
+ *
+ * Page navigation lives entirely in the left rail (docked on wide screens, a
+ * drawer below 980px), so there is no tab strip or dropdown here to duplicate
+ * it and no second menu control to keep in step with it.
+ *
+ * The theme switcher is deliberately not here — it floats bottom-left with the
+ * other floating controls, which keeps the bar narrow enough for the full
+ * wordmark to fit on a phone.
+ *
+ * The wordmark comes from the page registry and is shown in full at every
+ * width — the exam code in the primary colour, "Study Notes" muted, as on the
+ * sister sites. The bar gives up padding, gaps and icon size instead.
+ */
+
+const [lead, ...rest] = SITE.name.split(' ');
+---
+
+<header class="site-header">
+  <!-- Drawer control. Hidden by CSS while the rail is docked, and always to the
+       left of the wordmark so the header's leading control never moves. -->
+  <button
+    type="button"
+    class="icon-btn sidebar-open"
+    id="sidebar-open"
+    aria-label="Open navigation"
+    aria-controls="sidebar"
+    aria-expanded="false"
+  >
+    <FluentIcon name="navigation" size={20} />
+  </button>
+
+  <a class="brand" href={href('')} aria-label={`${SITE.name} — home`}>
+    <img src={asset('images/site-mark-no-bg.png')} alt="" width="30" height="30" />
+    <span class="brand-text"><span class="brand-lead">{lead}</span> <span class="brand-rest">{rest.join(' ')}</span></span>
+  </a>
+
+  <div class="header-tools">
+    <Search />
+    <!-- The visible label is the Fluent Star icon, "on" and the GitHub mark; the
+         icon carries "Star", so screen readers get the full phrase from
+         aria-label on the link itself (never a visually-hidden span, which a
+         narrow-screen rule hiding spans would silently remove). -->
+    <a class="ghub-link" href={SITE.repo} target="_blank" rel="noopener" aria-label="Star this repository on GitHub">
+      <FluentIcon name="star" size={16} class="ghub-star" />
+      <span class="ghub-on" aria-hidden="true">on</span>
+      <svg class="ghub-mark" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">
+        <path
+          d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+        ></path>
+      </svg>
+    </a>
+  </div>
+</header>

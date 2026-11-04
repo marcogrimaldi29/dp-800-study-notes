@@ -1,0 +1,343 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import AppliesTo from '../../components/AppliesTo.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const build = `
+flowchart TB
+  subgraph PREP["1 · Prepare"]
+    direction LR
+    CFG["Switches and credential<br/>PREVIEW_FEATURES · managed identity"] --> MOD["External model<br/>CREATE EXTERNAL MODEL"]
+  end
+  subgraph INGEST["2 · Ingest"]
+    direction LR
+    CH["Chunk<br/>AI_GENERATE_CHUNKS"] --> EM["Embed<br/>AI_GENERATE_EMBEDDINGS"]
+    EM --> IX["Index<br/>DiskANN + full-text"]
+  end
+  subgraph SEARCH["3 · Search"]
+    direction LR
+    ENN["Exact baseline<br/>VECTOR_DISTANCE"] ~~~ ANN["Approximate<br/>VECTOR_SEARCH"]
+    ANN ~~~ HYB["Hybrid<br/>reciprocal rank fusion"]
+  end
+  subgraph GEN["4 · Generate"]
+    direction LR
+    CTX["Context as JSON<br/>FOR JSON PATH"] --> LLM["Chat call<br/>sp_invoke_external_rest_endpoint"]
+    LLM --> OUT["Answer and citations<br/>JSON_VALUE · OPENJSON"]
+  end
+  PREP ~~~ INGEST
+  INGEST ~~~ SEARCH
+  SEARCH ~~~ GEN
+`;
+
+const step1 = `-- SQL Server 2025 only: vector index and VECTOR_SEARCH are preview there
+ALTER DATABASE SCOPED CONFIGURATION SET PREVIEW_FEATURES = ON;
+-- SQL Server 2025 and MI: allow outbound REST calls (already on in Azure SQL Database and Fabric)
+EXECUTE sp_configure 'external rest endpoint enabled', 1;
+RECONFIGURE WITH OVERRIDE;
+
+-- A master key protects database scoped credentials
+IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = '##MS_DatabaseMasterKey##')
+    CREATE MASTER KEY ENCRYPTION BY PASSWORD = N'<strong password>';
+
+-- Passwordless: the database's managed identity has "Cognitive Services OpenAI User" on the resource
+CREATE DATABASE SCOPED CREDENTIAL [https://contoso-ai.openai.azure.com/]
+    WITH IDENTITY = 'Managed Identity',
+         SECRET   = '{"resourceid":"https://cognitiveservices.azure.com"}';
+
+CREATE EXTERNAL MODEL Embed3Small
+WITH (
+    LOCATION   = 'https://contoso-ai.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01',
+    API_FORMAT = 'Azure OpenAI',
+    MODEL_TYPE = EMBEDDINGS,
+    MODEL      = 'text-embedding-3-small',
+    CREDENTIAL = [https://contoso-ai.openai.azure.com/],
+    PARAMETERS = '{"sql_rest_options": {"retry_count": 3}}'
+);
+
+-- Smoke test: one call, check the size the model returned
+DECLARE @v vector(1536) = AI_GENERATE_EMBEDDINGS(N'hello' USE MODEL Embed3Small);
+SELECT VECTORPROPERTY(@v, 'Dimensions') AS dims;    -- 1536`;
+
+const step2 = `CREATE TABLE dbo.KbArticle
+(
+    ArticleID  int IDENTITY PRIMARY KEY,
+    Title      nvarchar(300) NOT NULL,
+    Body       nvarchar(max) NOT NULL,
+    Product    nvarchar(100) NOT NULL,          -- a filter, kept relational
+    UpdatedAt  datetime2     NOT NULL DEFAULT SYSUTCDATETIME()
+);
+
+CREATE TABLE dbo.KbChunk
+(
+    ChunkID    int IDENTITY CONSTRAINT PK_KbChunk PRIMARY KEY CLUSTERED,   -- single int clustered key
+    ArticleID  int           NOT NULL REFERENCES dbo.KbArticle (ArticleID),
+    ChunkOrder bigint        NOT NULL,
+    ChunkText  nvarchar(max) NOT NULL,
+    Embedding  vector(1536)  NOT NULL,
+    CONSTRAINT UQ_KbChunk UNIQUE (ArticleID, ChunkOrder)
+);
+
+-- Chunk and embed in one pass. Prefix each chunk with its title so a chunk
+-- taken from the middle of an article still says what it is about.
+INSERT dbo.KbChunk (ArticleID, ChunkOrder, ChunkText, Embedding)
+SELECT a.ArticleID, c.chunk_order, c.chunk,
+       AI_GENERATE_EMBEDDINGS(CONCAT(a.Title, N': ', c.chunk) USE MODEL Embed3Small)
+FROM dbo.KbArticle AS a
+CROSS APPLY AI_GENERATE_CHUNKS(SOURCE = a.Body, CHUNK_TYPE = FIXED,
+                               CHUNK_SIZE = 1200, OVERLAP = 15) AS c;`;
+
+const step3 = `-- Vector index: at least 100 non-NULL vectors first; metric must match the queries
+CREATE VECTOR INDEX vix_KbChunk ON dbo.KbChunk (Embedding)
+WITH (METRIC = 'cosine', TYPE = 'DiskANN');
+
+-- Full-text index for the keyword half of hybrid search
+CREATE FULLTEXT CATALOG ftKb AS DEFAULT;
+CREATE FULLTEXT INDEX ON dbo.KbChunk (ChunkText) KEY INDEX PK_KbChunk WITH CHANGE_TRACKING AUTO;
+
+-- Inspect
+SELECT name, vector_index_type, distance_metric FROM sys.vector_indexes WHERE object_id = OBJECT_ID('dbo.KbChunk');
+SELECT graph_catchup_pending_percent FROM sys.dm_db_vector_indexes;   -- background maintenance backlog`;
+
+const step4 = `DECLARE @q vector(1536) = AI_GENERATE_EMBEDDINGS(N'reset the router to factory settings' USE MODEL Embed3Small);
+
+-- Exact (ENN): the recall baseline
+SELECT TOP (10) ChunkID, VECTOR_DISTANCE('cosine', Embedding, @q) AS distance
+FROM dbo.KbChunk
+ORDER BY distance;
+
+-- Approximate (ANN) with a relational filter applied during the search
+SELECT TOP (10) WITH APPROXIMATE c.ChunkID, a.Title, r.distance
+FROM dbo.KbArticle AS a
+INNER JOIN VECTOR_SEARCH(TABLE = dbo.KbChunk AS c, COLUMN = Embedding,
+                         SIMILAR_TO = @q, METRIC = 'cosine') AS r
+        ON a.ArticleID = c.ArticleID
+WHERE a.Product = N'Router X200'
+ORDER BY r.distance;
+
+-- Recall@10: share of the exact top 10 that ANN also returned
+SELECT COUNT(*) / 10.0 AS recall_at_10
+FROM (SELECT TOP (10) ChunkID FROM dbo.KbChunk
+      ORDER BY VECTOR_DISTANCE('cosine', Embedding, @q)) AS exact
+JOIN (SELECT TOP (10) WITH APPROXIMATE c.ChunkID, r.distance
+      FROM VECTOR_SEARCH(TABLE = dbo.KbChunk AS c, COLUMN = Embedding,
+                         SIMILAR_TO = @q, METRIC = 'cosine') AS r
+      ORDER BY r.distance) AS approx
+  ON approx.ChunkID = exact.ChunkID;`;
+
+const step5 = `CREATE OR ALTER PROCEDURE dbo.usp_HybridSearch
+    @Text   nvarchar(400),
+    @Top    int   = 8,
+    @WText  float = 1.0,        -- weight of the keyword ranking
+    @WVec   float = 1.0         -- weight of the semantic ranking
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @q vector(1536) = AI_GENERATE_EMBEDDINGS(@Text USE MODEL Embed3Small);
+    DECLARE @k int = 60;
+
+    WITH kw AS (
+        SELECT TOP (50) ft.[KEY] AS ChunkID, ROW_NUMBER() OVER (ORDER BY ft.[RANK] DESC) AS rnk
+        FROM FREETEXTTABLE(dbo.KbChunk, ChunkText, @Text) AS ft
+    ),
+    sem AS (
+        SELECT ChunkID, ROW_NUMBER() OVER (ORDER BY distance) AS rnk
+        FROM (SELECT TOP (50) WITH APPROXIMATE c.ChunkID, r.distance
+              FROM VECTOR_SEARCH(TABLE = dbo.KbChunk AS c, COLUMN = Embedding,
+                                 SIMILAR_TO = @q, METRIC = 'cosine') AS r
+              ORDER BY r.distance) AS v
+    ),
+    fused AS (
+        SELECT COALESCE(kw.ChunkID, sem.ChunkID) AS ChunkID,
+               @WText * COALESCE(1.0 / (@k + kw.rnk), 0)
+             + @WVec  * COALESCE(1.0 / (@k + sem.rnk), 0) AS score
+        FROM kw FULL OUTER JOIN sem ON sem.ChunkID = kw.ChunkID
+    )
+    SELECT TOP (@Top) f.ChunkID, a.ArticleID, a.Title, c.ChunkText, f.score
+    FROM fused AS f
+    JOIN dbo.KbChunk   AS c ON c.ChunkID = f.ChunkID
+    JOIN dbo.KbArticle AS a ON a.ArticleID = c.ArticleID
+    ORDER BY f.score DESC;
+END;`;
+
+const step6 = `CREATE OR ALTER PROCEDURE dbo.usp_AskKb
+    @Question nvarchar(1000)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Retrieve: reuse the hybrid search, then shape the hits as compact JSON
+    DECLARE @hits TABLE (ChunkID int, ArticleID int, Title nvarchar(300), ChunkText nvarchar(max), score float);
+    INSERT @hits EXEC dbo.usp_HybridSearch @Text = @Question, @Top = 5;
+
+    DECLARE @context nvarchar(max) =
+        (SELECT ArticleID AS id, Title AS title, ChunkText AS text FROM @hits ORDER BY score DESC FOR JSON PATH);
+
+    -- Augment: grounding rules, a JSON reply format, then context and question
+    DECLARE @payload nvarchar(max) = JSON_OBJECT(
+        'messages': JSON_ARRAY(
+            JSON_OBJECT('role': 'system', 'content':
+                'You answer support questions using only the articles in the context. '
+              + 'Reply in JSON: {"answer": string, "sources": [article ids]}. '
+              + 'If the context does not contain the answer, set answer to "I don''t know".'),
+            JSON_OBJECT('role': 'user', 'content': CONCAT('Context: ', @context, N' Question: ', @Question))),
+        'response_format': JSON_OBJECT('type': 'json_object'),
+        'temperature': 0.1);
+
+    -- Generate
+    DECLARE @response nvarchar(max), @rc int;
+    EXECUTE @rc = sp_invoke_external_rest_endpoint
+        @url         = N'https://contoso-ai.openai.azure.com/openai/deployments/gpt-chat/chat/completions?api-version=2024-10-21',
+        @payload     = @payload,
+        @credential  = [https://contoso-ai.openai.azure.com/],
+        @timeout     = 90,
+        @retry_count = 3,
+        @response    = @response OUTPUT;
+
+    IF @rc <> 0
+    BEGIN
+        DECLARE @msg nvarchar(200) = CONCAT(N'The chat model call failed with HTTP ', @rc, N'.');
+        THROW 50100, @msg, 1;
+    END;
+
+    -- Extract: the model's JSON reply is a string inside the envelope
+    DECLARE @reply nvarchar(max) = JSON_VALUE(@response, '$.result.choices[0].message.content');
+
+    SELECT JSON_VALUE(@reply, '$.answer') AS answer,
+           s.value                        AS source_article_id,
+           JSON_VALUE(@response, '$.result.usage.total_tokens') AS tokens_used
+    FROM OPENJSON(@reply, '$.sources') AS s;
+END;`;
+
+const step7 = `-- Keep embeddings fresh with Change Tracking and a scheduled job (Elastic jobs, SQL Agent,
+-- a Fabric pipeline or an Azure Function timer) — no work added to the write path.
+ALTER DATABASE CURRENT SET CHANGE_TRACKING = ON (CHANGE_RETENTION = 3 DAYS, AUTO_CLEANUP = ON);
+ALTER TABLE dbo.KbArticle ENABLE CHANGE_TRACKING WITH (TRACK_COLUMNS_UPDATED = ON);
+
+CREATE OR ALTER PROCEDURE dbo.usp_RefreshKbEmbeddings
+AS
+BEGIN
+    SET NOCOUNT ON; SET XACT_ABORT ON;
+    DECLARE @from bigint = (SELECT LastVersion FROM dbo.SyncState WHERE Name = N'KbArticle');
+    DECLARE @to   bigint = CHANGE_TRACKING_CURRENT_VERSION();
+
+    -- Only articles whose Title or Body changed (or that are new or deleted)
+    SELECT ct.ArticleID, ct.SYS_CHANGE_OPERATION AS op
+    INTO #changed
+    FROM CHANGETABLE(CHANGES dbo.KbArticle, @from) AS ct
+    WHERE ct.SYS_CHANGE_OPERATION <> 'U'
+       OR CHANGE_TRACKING_IS_COLUMN_IN_MASK(COLUMNPROPERTY(OBJECT_ID('dbo.KbArticle'), 'Body',  'ColumnId'), ct.SYS_CHANGE_COLUMNS) = 1
+       OR CHANGE_TRACKING_IS_COLUMN_IN_MASK(COLUMNPROPERTY(OBJECT_ID('dbo.KbArticle'), 'Title', 'ColumnId'), ct.SYS_CHANGE_COLUMNS) = 1;
+
+    BEGIN TRANSACTION;
+        DELETE c FROM dbo.KbChunk AS c JOIN #changed AS x ON x.ArticleID = c.ArticleID;
+
+        INSERT dbo.KbChunk (ArticleID, ChunkOrder, ChunkText, Embedding)
+        SELECT a.ArticleID, ch.chunk_order, ch.chunk,
+               AI_GENERATE_EMBEDDINGS(CONCAT(a.Title, N': ', ch.chunk) USE MODEL Embed3Small)
+        FROM dbo.KbArticle AS a
+        JOIN #changed AS x ON x.ArticleID = a.ArticleID AND x.op <> 'D'
+        CROSS APPLY AI_GENERATE_CHUNKS(SOURCE = a.Body, CHUNK_TYPE = FIXED, CHUNK_SIZE = 1200, OVERLAP = 15) AS ch;
+
+        UPDATE dbo.SyncState SET LastVersion = @to WHERE Name = N'KbArticle';
+    COMMIT;
+END;`;
+---
+
+<NoteLayout
+  slug="vectors-rag-deep-dive"
+  description="DP-800 deep dive: one end-to-end build in T-SQL — credential and external model, chunking and embeddings, DiskANN vector index and full-text index, exact and approximate search with a recall check, hybrid search with weighted reciprocal rank fusion, a grounded RAG procedure with structured output, and Change Tracking-based embedding maintenance."
+  intro="Skill 3 explains the pieces; this page assembles them into one working knowledge-base assistant, entirely in T-SQL. Read it top to bottom once, then come back to each step when a question shows you a fragment of it and asks what is wrong."
+>
+  <AppliesTo ss="preview" db="ga" mi="ga" fabric="ga" note="Everything here is GA in Azure SQL Database and SQL database in Fabric. On SQL Server 2025 the vector index and VECTOR_SEARCH need PREVIEW_FEATURES; on MI use the Always-up-to-date update policy (external models and AI functions require it)." />
+  <Mermaid code={build} caption="The build in four stages. Stage 2 is the expensive one — every chunk is a model call — so it runs once as a backfill and then only for changed rows (step 7)." />
+
+  <h2 id="step-1-switches-credential-and-model">Step 1 · Switches, credential and model</h2>
+  <p>
+    Three things must exist before any AI function works: outbound REST calls allowed, a credential the database can
+    present to the endpoint, and an external model object that names the endpoint. Prefer the managed identity
+    credential; an <code>HTTPEndpointHeaders</code> credential with an <code>api-key</code> works but stores a secret in
+    the database.
+  </p>
+  <CodeBlock code={step1} />
+  <Callout type="syntax" title="Credential name rules">
+    <p>
+      The credential's name must be an HTTPS URL that is the same as, or a prefix of, the URL being called (protocol and
+      host must match, no query string). A credential named for
+      <code>https://contoso-ai.openai.azure.com/</code> covers every deployment on that resource.
+    </p>
+  </Callout>
+
+  <h2 id="step-2-chunk-and-embed">Step 2 · Chunk and embed</h2>
+  <p>
+    Articles go in one table, chunks and their embeddings in another, keyed by a single integer so the vector index and
+    the full-text index can both use it. <code>CHUNK_SIZE</code> counts characters; <code>OVERLAP</code> is a percentage
+    (0–50) of the chunk size.
+  </p>
+  <CodeBlock code={step2} />
+  <Callout type="tip" title="Size chunks against the model, not by habit">
+    <p>
+      Roughly four characters make a token in English. A 1,200-character chunk is about 300 tokens — far under an
+      embedding model's input limit and small enough to stay on one topic, yet large enough that five of them fit
+      comfortably in a chat model's context with room for the question and the answer.
+    </p>
+  </Callout>
+
+  <h2 id="step-3-indexes">Step 3 · Vector and full-text indexes</h2>
+  <CodeBlock code={step3} />
+  <ul>
+    <li>Create the vector index <strong>after</strong> loading at least 100 vectors (error 42266 otherwise), with the metric your queries use.</li>
+    <li>The latest index version supports full DML; changes are folded into the DiskANN graph by background maintenance, visible in <code>graph_catchup_pending_percent</code>.</li>
+    <li>Tables with a vector index can't be truncated, and the index isn't created by a DACPAC deployment if the table has fewer than 100 vectors — create it in a post-deployment step once the data is loaded.</li>
+  </ul>
+
+  <h2 id="step-4-exact-approximate-and-recall">Step 4 · Exact, approximate and recall</h2>
+  <p>
+    Always keep an exact query to hand: it is the ground truth for measuring how much the approximate index gives up.
+    On a few thousand chunks ENN is fast enough to use directly; past that, ANN is the production path.
+  </p>
+  <CodeBlock code={step4} />
+
+  <h2 id="step-5-hybrid-search-with-rrf">Step 5 · Hybrid search with weighted RRF</h2>
+  <p>
+    Each retriever returns its own top 50; reciprocal rank fusion combines their <em>positions</em>, so the incompatible
+    scales of full-text rank and cosine distance never meet. Weights let you favour one retriever — raise
+    <code>@WText</code> for catalogues full of part numbers, <code>@WVec</code> for natural-language questions.
+  </p>
+  <CodeBlock code={step5} />
+
+  <h2 id="step-6-grounded-rag-with-structured-output">Step 6 · Grounded RAG with structured output</h2>
+  <p>
+    The procedure retrieves with hybrid search, sends only id, title and text as JSON context, tells the model to answer
+    only from it and to reply in JSON, then parses the reply with <code>OPENJSON</code> so the application gets the
+    answer <em>and</em> the article ids it came from.
+  </p>
+  <CodeBlock code={step6} />
+  <Callout type="exam" title="The bugs a RAG question hides">
+    <ul>
+      <li>Reading <code>$.choices[0].message.content</code> instead of <code>$.result.choices[0].message.content</code> — the procedure wraps the endpoint's body in <code>result</code>.</li>
+      <li>Treating the return code as success when it is non-zero: <code>@rc</code> is the HTTP status (429, 401…) on failure.</li>
+      <li>Calling a chat deployment through <code>CREATE EXTERNAL MODEL</code>: external models are <code>EMBEDDINGS</code> only.</li>
+      <li>Concatenating whole rows (<code>SELECT *</code>) into the prompt: token cost, context overflow and data exposure.</li>
+      <li>A question embedded with a different model (or dimension) from the stored vectors — distances become meaningless.</li>
+    </ul>
+  </Callout>
+
+  <h2 id="step-7-keep-embeddings-fresh">Step 7 · Keep embeddings fresh</h2>
+  <p>
+    The refresh job reads Change Tracking, re-chunks and re-embeds only articles whose text columns changed, and removes
+    chunks of deleted articles — one of the seven maintenance methods in
+    <a href={`${href('skill-3-ai-capabilities')}#choose-an-embedding-maintenance-method`}>Skill 3</a>, chosen here
+    because it batches model calls and adds nothing to the write path.
+  </p>
+  <CodeBlock code={step7} />
+  <Callout type="note" title="Other ways to run step 7">
+    <p>
+      An Azure Function with a SQL trigger binding receives the same Change Tracking changes and can call the model from
+      outside the database; change event streaming pushes every change to Event Hubs for a consumer to re-embed. Both
+      move the model calls — and their latency and throttling — off the database.
+    </p>
+  </Callout>
+</NoteLayout>

@@ -1,0 +1,463 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import AppliesTo from '../../components/AppliesTo.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { href } from '../../lib/urls';
+
+const ragFlow = `
+flowchart TB
+  subgraph R["Retrieve"]
+    direction LR
+    Q["1 · User question"] --> EMB["2 · Embed the question<br/>AI_GENERATE_EMBEDDINGS"]
+    EMB --> RET["3 · Find rows<br/>VECTOR_SEARCH · hybrid"]
+  end
+  subgraph A["Augment"]
+    direction LR
+    CTX["4 · Shape context<br/>FOR JSON · JSON_OBJECT"] --> PROMPT["5 · Build the prompt<br/>system + context + question"]
+  end
+  subgraph G["Generate"]
+    direction LR
+    CALL["6 · Call the chat model<br/>sp_invoke_external_rest_endpoint"] --> ANS["7 · Extract the answer<br/>JSON_VALUE $.result…"]
+  end
+  R ~~~ A
+  A ~~~ G
+`;
+
+const searchChoice = `
+flowchart TB
+  Q["What does the user type?"] --> A{"Exact words, codes,<br/>names, phrases?"}
+  A -->|"yes"| FT["Full-text search<br/>CONTAINS · FREETEXTTABLE"]
+  A -->|"no, a meaning"| B{"Do exact terms<br/>still matter?"}
+  B -->|"no"| VS["Vector search<br/>VECTOR_SEARCH · VECTOR_DISTANCE"]
+  B -->|"yes, both"| HY["Hybrid search<br/>full-text + vector, fused with RRF"]
+`;
+
+const model = `-- Applies to: SQL Server 2025, Azure SQL Database, Azure SQL MI (Always-up-to-date), SQL database in Fabric
+CREATE EXTERNAL MODEL EmbeddingSmall
+AUTHORIZATION dbo
+WITH (
+    LOCATION   = 'https://contoso-ai.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01',
+    API_FORMAT = 'Azure OpenAI',                 -- also 'OpenAI', 'Ollama', 'ONNX Runtime'
+    MODEL_TYPE = EMBEDDINGS,                     -- the only accepted model type
+    MODEL      = 'text-embedding-3-small',
+    CREDENTIAL = [https://contoso-ai.openai.azure.com/],
+    PARAMETERS = '{"dimensions": 1536, "sql_rest_options": {"retry_count": 3}}'
+);
+
+ALTER EXTERNAL MODEL EmbeddingSmall SET (MODEL = 'text-embedding-3-large');   -- swap the model behind the name
+GRANT EXECUTE ON EXTERNAL MODEL::EmbeddingSmall TO app_writer;                -- needed to use it in AI functions
+SELECT name, location, api_format, model_type, model FROM sys.external_models;
+DROP EXTERNAL MODEL EmbeddingSmall;`;
+
+const chunks = `-- Chunk long text and embed every chunk in one statement (compatibility level 170)
+CREATE TABLE dbo.DocChunk
+(
+    DocID      int           NOT NULL,
+    ChunkOrder bigint        NOT NULL,
+    ChunkText  nvarchar(max) NOT NULL,
+    Embedding  vector(1536)  NOT NULL,
+    CONSTRAINT PK_DocChunk PRIMARY KEY (DocID, ChunkOrder)
+);
+
+INSERT dbo.DocChunk (DocID, ChunkOrder, ChunkText, Embedding)
+SELECT d.DocID, c.chunk_order, c.chunk,
+       AI_GENERATE_EMBEDDINGS(c.chunk USE MODEL EmbeddingSmall)
+FROM dbo.Document AS d
+CROSS APPLY AI_GENERATE_CHUNKS(
+        SOURCE     = d.Title + N'. ' + d.Body,   -- put the context the chunk needs into the text
+        CHUNK_TYPE = FIXED,                       -- the only chunk type
+        CHUNK_SIZE = 1000,                        -- characters, not tokens
+        OVERLAP    = 10                           -- percent of CHUNK_SIZE, 0 to 50
+     ) AS c;`;
+
+const embedRow = `-- One embedding per product, built from the columns that carry meaning
+UPDATE p
+SET    p.Embedding = AI_GENERATE_EMBEDDINGS(
+           CONCAT(p.Name, N'. Category: ', c.Name, N'. ', p.Description)
+           USE MODEL EmbeddingSmall)
+FROM   dbo.Product AS p
+JOIN   dbo.Category AS c ON c.CategoryID = p.CategoryID
+WHERE  p.Embedding IS NULL;                        -- or rows flagged as changed`;
+
+const fulltext = `-- Full-text index (preview in SQL database in Fabric)
+CREATE FULLTEXT CATALOG ftCatalog AS DEFAULT;
+CREATE FULLTEXT INDEX ON dbo.Product (Name, Description)
+    KEY INDEX PK_Product
+    WITH CHANGE_TRACKING AUTO;
+
+-- Predicates: filter only
+SELECT ProductID, Name FROM dbo.Product
+WHERE CONTAINS(Description, N'"waterproof" AND NEAR((jacket, hood), 5)');
+
+-- Rowset functions: return a RANK to order by or fuse
+SELECT TOP (20) p.ProductID, p.Name, ft.[RANK]
+FROM FREETEXTTABLE(dbo.Product, (Name, Description), N'light rain jacket for hiking') AS ft
+JOIN dbo.Product AS p ON p.ProductID = ft.[KEY]
+ORDER BY ft.[RANK] DESC;`;
+
+const vectorFns = `DECLARE @a vector(3) = '[1, 2, 2]', @b vector(3) = '[2, 1, 2]';
+
+SELECT VECTOR_DISTANCE('cosine',    @a, @b) AS cosine_distance,   -- 1 - cosine similarity: 0 = same direction
+       VECTOR_DISTANCE('euclidean', @a, @b) AS euclidean,         -- straight-line distance
+       VECTOR_DISTANCE('dot',       @a, @b) AS neg_dot,           -- negative dot product: smaller = more similar
+       VECTOR_NORM(@a, 'norm2')            AS length,             -- 3
+       VECTOR_NORMALIZE(@a, 'norm2')       AS unit_vector,        -- [0.333, 0.667, 0.667]
+       VECTORPROPERTY(@a, 'Dimensions')    AS dims,               -- 3
+       VECTORPROPERTY(@a, 'BaseType')      AS base_type;          -- float32`;
+
+const ennAnn = `DECLARE @q vector(1536) = AI_GENERATE_EMBEDDINGS(N'warm jacket for winter cycling' USE MODEL EmbeddingSmall);
+
+-- ENN / kNN: exact, scans every row — fine up to tens of thousands of rows, or as a recall baseline
+SELECT TOP (10) ProductID, Name, VECTOR_DISTANCE('cosine', Embedding, @q) AS distance
+FROM dbo.Product
+WHERE CategoryID = 3
+ORDER BY distance;
+
+-- ANN: approximate, served by a DiskANN vector index with the same metric
+CREATE VECTOR INDEX vix_Product_Embedding ON dbo.Product (Embedding)
+WITH (METRIC = 'cosine', TYPE = 'DiskANN');      -- latest version needs at least 100 non-NULL rows
+
+SELECT TOP (10) WITH APPROXIMATE p.ProductID, p.Name, r.distance
+FROM VECTOR_SEARCH(TABLE = dbo.Product AS p, COLUMN = Embedding,
+                   SIMILAR_TO = @q, METRIC = 'cosine') AS r
+WHERE p.CategoryID = 3                           -- iterative filtering: applied during the search
+ORDER BY r.distance;                             -- ascending distance only`;
+
+const rrf = `-- Hybrid search: fuse a keyword ranking and a semantic ranking with reciprocal rank fusion
+DECLARE @text nvarchar(400) = N'light rain jacket for hiking';
+DECLARE @q vector(1536) = AI_GENERATE_EMBEDDINGS(@text USE MODEL EmbeddingSmall);
+DECLARE @k int = 60;                              -- RRF constant; 60 is the conventional default
+
+WITH keyword AS (
+    SELECT TOP (50) ft.[KEY] AS ProductID,
+           ROW_NUMBER() OVER (ORDER BY ft.[RANK] DESC) AS rnk
+    FROM FREETEXTTABLE(dbo.Product, (Name, Description), @text) AS ft
+),
+semantic AS (
+    SELECT ProductID, ROW_NUMBER() OVER (ORDER BY distance) AS rnk
+    FROM (SELECT TOP (50) WITH APPROXIMATE p.ProductID, r.distance
+          FROM VECTOR_SEARCH(TABLE = dbo.Product AS p, COLUMN = Embedding,
+                             SIMILAR_TO = @q, METRIC = 'cosine') AS r
+          ORDER BY r.distance) AS v                -- window functions need the subquery pattern
+)
+SELECT TOP (10) COALESCE(k.ProductID, s.ProductID) AS ProductID,
+       COALESCE(1.0 / (@k + k.rnk), 0) + COALESCE(1.0 / (@k + s.rnk), 0) AS rrf_score
+FROM keyword AS k
+FULL OUTER JOIN semantic AS s ON s.ProductID = k.ProductID
+ORDER BY rrf_score DESC;`;
+
+const rag = `CREATE OR ALTER PROCEDURE dbo.usp_AskCatalog
+    @Question nvarchar(1000),
+    @Answer   nvarchar(max) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @q vector(1536) = AI_GENERATE_EMBEDDINGS(@Question USE MODEL EmbeddingSmall);
+
+    -- 1. Retrieve and 2. convert structured rows to compact JSON context
+    DECLARE @context nvarchar(max) = (
+        SELECT Name, Color, ListPrice, Description
+        FROM (SELECT TOP (5) WITH APPROXIMATE p.Name, p.Color, p.ListPrice, p.Description, r.distance
+              FROM VECTOR_SEARCH(TABLE = dbo.Product AS p, COLUMN = Embedding,
+                                 SIMILAR_TO = @q, METRIC = 'cosine') AS r
+              WHERE p.IsActive = 1
+              ORDER BY r.distance) AS hits
+        ORDER BY distance
+        FOR JSON PATH);
+
+    -- 3. Build the chat request: grounding instructions + context + question
+    DECLARE @payload nvarchar(max) = JSON_OBJECT(
+        'messages': JSON_ARRAY(
+            JSON_OBJECT('role': 'system',
+                        'content': 'Answer only from the products in the context. If the answer is not there, say you do not know.'),
+            JSON_OBJECT('role': 'user',
+                        'content': CONCAT('Context: ', @context, ' Question: ', @Question))),
+        'temperature': 0.2,
+        'max_tokens': 400);
+
+    -- 4. Send it to the chat model (an external model cannot do this: MODEL_TYPE is EMBEDDINGS only)
+    DECLARE @response nvarchar(max), @rc int;
+    EXECUTE @rc = sp_invoke_external_rest_endpoint
+        @url         = N'https://contoso-ai.openai.azure.com/openai/deployments/gpt-chat/chat/completions?api-version=2024-10-21',
+        @method      = 'POST',
+        @payload     = @payload,
+        @credential  = [https://contoso-ai.openai.azure.com/],
+        @timeout     = 60,
+        @retry_count = 3,                          -- retries 408, 429, 500, 502, 503, 504
+        @response    = @response OUTPUT;
+
+    -- 5. Extract the answer; @rc is 0 for any 2xx, otherwise the HTTP status code
+    SET @Answer = CASE WHEN @rc = 0
+                       THEN JSON_VALUE(@response, '$.result.choices[0].message.content')
+                       ELSE CONCAT('Model call failed: HTTP ', @rc) END;
+END;`;
+
+const structured = `-- Ask for structured output, then shred it relationally
+-- (add to the payload: 'response_format': JSON_OBJECT('type': 'json_object') and say "reply in JSON")
+SELECT j.ProductName, j.Reason
+FROM OPENJSON(JSON_VALUE(@response, '$.result.choices[0].message.content'), '$.recommendations')
+     WITH (ProductName nvarchar(200) '$.name',
+           Reason      nvarchar(400) '$.reason') AS j;`;
+---
+
+<NoteLayout
+  slug="skill-3-ai-capabilities"
+  description="DP-800 Skill 3 (25–30%): evaluating and creating external models, choosing columns, chunking and maintaining embeddings; full-text, vector and hybrid search with the vector type, vector functions, DiskANN indexes, ANN versus ENN and reciprocal rank fusion; and retrieval-augmented generation with sp_invoke_external_rest_endpoint."
+  intro="The smallest area by weight, and the newest material on the exam. It is a pipeline you can build entirely in T-SQL: register a model, turn rows into embeddings, search them by meaning (and keywords), and hand the best rows to a chat model as grounded context."
+>
+  <Callout type="exam" title="What this skill tests">
+    <p>
+      Three objective groups: <strong>models and embeddings</strong>, <strong>intelligent search</strong> and
+      <strong>retrieval-augmented generation</strong>. Expect "which function", "which metric", "ANN or ENN", "which
+      maintenance method" and "fix this RAG procedure" items. The platform line matters more here than anywhere: vector
+      indexes and <code>VECTOR_SEARCH</code> are GA in Azure SQL and Fabric but preview in SQL Server 2025. The worked,
+      end-to-end build is in the <a href={href('vectors-rag-deep-dive')}>Vectors, search &amp; RAG deep dive</a>.
+    </p>
+  </Callout>
+
+  <h2 id="models-and-embeddings">Models and embeddings</h2>
+  <p>
+    An <strong>embedding</strong> is a vector — a fixed-length array of numbers — that places a piece of text (or an image)
+    in a space where similar meanings sit close together. An <strong>embedding model</strong> produces them; a
+    <strong>chat model</strong> generates text. A RAG solution needs both.
+  </p>
+
+  <h3 id="evaluate-external-models">Evaluate external models</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Characteristic</th><th>Why it matters for a SQL workload</th></tr></thead>
+      <tbody>
+        <tr><td>Modality</td><td>Text-only versus <strong>multimodal</strong> (images, documents). Product photos or scanned forms need a multimodal model.</td></tr>
+        <tr><td>Language coverage</td><td>A <strong>multilingual</strong> embedding model maps "chaqueta" and "jacket" close together; an English-only one does not.</td></tr>
+        <tr><td>Size</td><td>Larger models reason better but cost more tokens and latency; small models are usually right for embeddings and classification.</td></tr>
+        <tr><td>Dimensions</td><td>Must equal the <code>vector(n)</code> column size. Some models accept a <code>dimensions</code> parameter to shorten output (storage versus accuracy).</td></tr>
+        <tr><td>Context window and tokens</td><td>Caps how much text one embedding or one prompt can hold, and drives cost — the reason you chunk and keep RAG context compact.</td></tr>
+        <tr><td><strong>Structured output</strong></td><td>Models that return JSON (JSON mode or a JSON schema) can be parsed with <code>OPENJSON</code> instead of string handling.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    <strong>Microsoft Foundry</strong>'s model catalog is where you compare capabilities, benchmarks, versions and lifecycle
+    status, and deploy the model whose endpoint the database will call.
+  </p>
+
+  <h3 id="create-and-manage-external-models">Create and manage external models</h3>
+  <p>
+    An <strong>external model</strong> is a database object that stores an inference endpoint's location, API format,
+    model name, credential and default parameters — so T-SQL can say <code>USE MODEL EmbeddingSmall</code> instead of
+    building HTTP requests.
+  </p>
+  <CodeBlock code={model} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="MI: Always-up-to-date update policy only. SQL Server 2025 also supports a local ONNX Runtime model (Windows, preview, PREVIEW_FEATURES plus 'external AI runtimes enabled')." />
+  <ul>
+    <li><strong>Permissions:</strong> <code>CREATE EXTERNAL MODEL</code> or <code>ALTER ANY EXTERNAL MODEL</code> to manage; <code>EXECUTE ON EXTERNAL MODEL::name</code> to use.</li>
+    <li><strong>Credential:</strong> a database scoped credential named after the endpoint URL — <code>HTTPEndpointHeaders</code> with an API key, or <code>Managed Identity</code> (preferred; see <a href={`${href('skill-2-secure-optimize-deploy')}#secure-model-endpoints`}>Skill 2</a>).</li>
+    <li><strong>HTTPS only.</strong> On SQL Server 2025 and MI, enable <code>external rest endpoint enabled</code> first.</li>
+  </ul>
+  <Callout type="exam" title="External models are for embeddings">
+    <p>
+      <code>MODEL_TYPE</code> accepts only <code>EMBEDDINGS</code>. To call a <em>chat</em> model for the generation step of
+      RAG you use <code>sp_invoke_external_rest_endpoint</code> directly — with the same credential.
+    </p>
+  </Callout>
+
+  <h3 id="choose-an-embedding-maintenance-method">Choose an embedding maintenance method</h3>
+  <p>Embeddings go stale the moment their source text changes. The outline lists seven ways to keep them aligned:</p>
+  <div class="table-wrap">
+    <table class="tbl t-orange">
+      <thead><tr><th>Method</th><th>How it works</th><th>Choose it when</th></tr></thead>
+      <tbody>
+        <tr><td>Table trigger</td><td>Marks rows for re-embedding (or re-embeds) inside the write transaction</td><td>Freshness must be immediate and volume is low — it adds latency and an external call risk to every write</td></tr>
+        <tr><td>Change Tracking</td><td>A scheduled job reads <code>CHANGETABLE</code> and re-embeds changed rows in batches</td><td>Batching is fine; you want low overhead and only need to know <em>which</em> rows changed</td></tr>
+        <tr><td>Change data capture</td><td>Reads before-and-after values from change tables</td><td>High volume, or you only re-embed when the <em>text</em> columns really changed</td></tr>
+        <tr><td>Azure Functions SQL trigger</td><td>A function receives changed rows (via Change Tracking) and calls the model outside the database</td><td>You want the work off the database, scaling independently</td></tr>
+        <tr><td>Azure Logic Apps</td><td>A workflow polls for new or modified rows and calls the embedding service</td><td>Low-code orchestration alongside other systems</td></tr>
+        <tr><td>Change event streaming</td><td>Every change is pushed to Event Hubs; consumers re-embed</td><td>Decoupled, near-real-time, possibly several consumers (preview)</td></tr>
+        <tr><td>Microsoft Foundry</td><td>Hosts, evaluates and versions the embedding model; another process detects changes</td><td>Centralized model management — paired with one of the methods above</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="columns-to-include-in-embeddings">Identify which columns to include</h3>
+  <ul>
+    <li><strong>Include</strong> the columns that carry meaning a user might search for: names, titles, descriptions, categories, reviews — concatenated into one labelled string.</li>
+    <li><strong>Exclude</strong> keys, codes, timestamps, numbers you filter on exactly, and sensitive data (the text is sent to the model).</li>
+    <li><strong>Keep filters relational:</strong> price, stock, region and tenant stay as ordinary columns in the <code>WHERE</code> clause, where the latest vector indexes apply them during the search.</li>
+    <li>If the meaning of an attribute changes the answer ("for children"), put it in the text; if it is a hard constraint ("in stock"), keep it as a filter.</li>
+  </ul>
+  <CodeBlock code={embedRow} />
+
+  <h3 id="design-and-implement-chunks">Design and implement chunks</h3>
+  <p>
+    Long documents are split into <strong>chunks</strong> so each fits the model's input limit and each embedding is
+    specific enough to match a question. Too large and the embedding blurs many topics; too small and chunks lose the
+    context needed to answer. <strong>Overlap</strong> repeats the end of one chunk at the start of the next so a sentence
+    on a boundary is not lost. Store chunks in their own table keyed by the parent row and chunk order.
+  </p>
+  <CodeBlock code={chunks} />
+
+  <h3 id="generate-embeddings">Generate embeddings</h3>
+  <p>
+    <code>AI_GENERATE_EMBEDDINGS(text USE MODEL name [PARAMETERS json])</code> calls the model and returns the vector,
+    which converts implicitly into a <code>vector(n)</code> column of the same dimension. It runs per row, so generate in
+    batches (an initial backfill, then the maintenance method's changed rows) and add <code>retry_count</code> for
+    throttling (HTTP 429).
+  </p>
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="AI_GENERATE_CHUNKS needs compatibility level 170. On MI, AI_GENERATE_EMBEDDINGS needs the Always-up-to-date policy." />
+
+  <h2 id="intelligent-search">Intelligent search</h2>
+
+  <h3 id="full-text-vector-or-hybrid">Full-text, semantic vector or hybrid</h3>
+  <Mermaid code={searchChoice} caption="Keyword search finds the words; vector search finds the meaning; hybrid gets both, which is why it usually wins on real catalogues with product codes and brand names." />
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th></th><th>Full-text</th><th>Vector</th><th>Hybrid</th></tr></thead>
+      <tbody>
+        <tr><td>Matches</td><td>Words, inflections, phrases, proximity</td><td>Meaning, synonyms, paraphrases, other languages</td><td>Both</td></tr>
+        <tr><td>Misses</td><td>Synonyms ("parka" for "coat")</td><td>Exact codes, rare names, negations</td><td>Little — at the cost of two queries</td></tr>
+        <tr><td>Needs</td><td>A full-text index</td><td>Embeddings and (for scale) a vector index</td><td>Both, plus a fusion step</td></tr>
+        <tr><td>Score</td><td><code>RANK</code> from <code>CONTAINSTABLE</code>/<code>FREETEXTTABLE</code></td><td>Distance (smaller is closer)</td><td>RRF score from the two ranks</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 id="full-text-search">Implement full-text search</h3>
+  <CodeBlock code={fulltext} />
+  <ul>
+    <li><code>CONTAINS</code> — precise: words, phrases, prefixes (<code>"hik*"</code>), <code>NEAR</code>, Boolean logic. <code>FREETEXT</code> — natural language: stems and thesaurus.</li>
+    <li><code>CONTAINSTABLE</code> / <code>FREETEXTTABLE</code> return <code>[KEY]</code> and <code>[RANK]</code>, which you need to sort or to fuse with vector results.</li>
+    <li>The full-text index needs a unique, single-column, non-nullable key index.</li>
+  </ul>
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="preview" />
+
+  <h3 id="design-for-vector-data">Design for vector data</h3>
+  <ul>
+    <li><code>vector(n)</code> stores <code>float32</code> elements, up to <strong>1,998</strong> dimensions; <code>vector(n, float16)</code> halves the storage and allows up to <strong>3,996</strong>.</li>
+    <li>Size is roughly 4 bytes per dimension (2 for float16): a 1,536-dimension float32 vector is about 6 KB, so keep embeddings in a narrow table (or a chunk table) rather than widening a hot OLTP table.</li>
+    <li>Vectors are exposed as JSON arrays (<code>'[0.1, 0.2, …]'</code>) and convert implicitly from strings and <code>json</code>.</li>
+    <li>A vector index is created per column and per metric; the latest version needs <strong>at least 100</strong> non-NULL rows, supports full DML, and blocks <code>TRUNCATE TABLE</code>.</li>
+  </ul>
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Applies to the vector type and functions. float16 vectors are GA in Azure SQL and Fabric, preview in SQL Server 2025." />
+
+  <h3 id="vector-functions">Vector types and functions for semantic search</h3>
+  <CodeBlock code={vectorFns} />
+  <dl class="terms">
+    <dt><code>VECTOR_DISTANCE(metric, v1, v2)</code></dt>
+    <dd>Exact distance between two vectors — the building block of ENN search and of similarity thresholds.</dd>
+    <dt><code>VECTOR_NORMALIZE(v, 'norm2')</code> and <code>VECTOR_NORM</code></dt>
+    <dd>Scale a vector to unit length (or measure it). With normalized vectors, <code>dot</code> orders results exactly like <code>cosine</code>, and is cheaper.</dd>
+    <dt><code>VECTORPROPERTY(v, 'Dimensions' | 'BaseType')</code></dt>
+    <dd>Inspect a vector — useful to validate that a model returned the expected size.</dd>
+    <dt><code>VECTOR_SEARCH(TABLE, COLUMN, SIMILAR_TO, METRIC)</code></dt>
+    <dd>Approximate search through a vector index, returning the table's columns plus <code>distance</code>.</dd>
+  </dl>
+
+  <h3 id="ann-or-enn">ANN or ENN</h3>
+  <div class="table-wrap">
+    <table class="tbl t-purple">
+      <thead><tr><th></th><th>ENN (exact, kNN)</th><th>ANN (approximate)</th></tr></thead>
+      <tbody>
+        <tr><td>How</td><td><code>TOP (k) … ORDER BY VECTOR_DISTANCE(…)</code> over every row</td><td><code>SELECT TOP (k) WITH APPROXIMATE … FROM VECTOR_SEARCH(…)</code> through a DiskANN index</td></tr>
+        <tr><td>Recall</td><td>100% by definition</td><td>High, tunable by the engine; may miss a few true neighbours</td></tr>
+        <tr><td>Cost</td><td>Grows linearly with rows</td><td>Sub-linear; scales to millions of vectors</td></tr>
+        <tr><td>Choose when</td><td>Small tables, heavily filtered subsets, or building a recall baseline</td><td>Large tables where latency matters</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={ennAnn} />
+  <AppliesTo ss="preview" db="ga" mi="ga" fabric="ga" note="Vector index and VECTOR_SEARCH. MI: GA with the Always-up-to-date policy, preview with the SQL Server 2025 policy. SQL Server 2025 needs PREVIEW_FEATURES = ON." />
+  <Callout type="syntax" title="VECTOR_SEARCH rules the exam can test">
+    <ul>
+      <li>Latest-version indexes need <code>SELECT TOP (N) WITH APPROXIMATE</code>; the old <code>TOP_N</code> parameter is deprecated and raises error 42274 against them.</li>
+      <li><code>ORDER BY</code> must be on <code>distance</code>, ascending, and nothing else; <code>WITH APPROXIMATE</code> without <code>VECTOR_SEARCH</code> is an error.</li>
+      <li><code>TOP</code> without <code>APPROXIMATE</code> runs an exact kNN search; with no matching index on the same column and metric the engine falls back to kNN with a warning.</li>
+      <li><code>GROUP BY</code>, aggregates, window functions, <code>UNION</code> and <code>DISTINCT</code> go in an outer query over a <code>VECTOR_SEARCH</code> subquery; it cannot be used inside a view.</li>
+      <li>The <code>FORCE_ANN_ONLY</code> table hint forces the index path.</li>
+    </ul>
+  </Callout>
+
+  <h3 id="vector-index-types-and-metrics">Evaluate vector index types and metrics</h3>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Metric</th><th>Measures</th><th>Use it when</th></tr></thead>
+      <tbody>
+        <tr><td><code>cosine</code></td><td>Angle between vectors, ignoring length</td><td>The default for text embeddings; what most embedding models are trained for</td></tr>
+        <tr><td><code>dot</code></td><td>Negative dot product (direction and magnitude)</td><td>Vectors are normalized (then it ranks like cosine), or the model's docs recommend it</td></tr>
+        <tr><td><code>euclidean</code></td><td>Straight-line (L2) distance</td><td>Magnitude carries meaning, for example some image or sensor embeddings</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The only index type is <strong>DiskANN</strong>, a graph-based ANN index designed to work from disk with a small
+    memory footprint. The index metric must match the metric in the query, or the index is not used.
+  </p>
+
+  <h3 id="hybrid-search-and-rrf">Implement hybrid search and reciprocal rank fusion</h3>
+  <p>
+    Full-text <code>RANK</code> and vector distance are on different scales, so you cannot add them.
+    <strong>Reciprocal rank fusion</strong> uses only each item's <em>position</em> in each list:
+    <code>score = Σ 1 / (k + rank)</code>, with <em>k</em> typically 60. An item ranked well by both searches rises to the
+    top; an item found by only one still gets partial credit.
+  </p>
+  <CodeBlock code={rrf} />
+
+  <h3 id="evaluate-search-performance">Evaluate performance of vector and hybrid search</h3>
+  <ul>
+    <li><strong>Relevance:</strong> measure <strong>recall</strong> of ANN against an exact (ENN) baseline for a sample of queries, and judge hybrid results on a labelled set.</li>
+    <li><strong>Latency and cost:</strong> check the plan uses the vector index (not a kNN scan), keep vector columns narrow, and pre-filter with indexed relational columns.</li>
+    <li><strong>Index health:</strong> <code>sys.vector_indexes</code> lists type, metric and build parameters; <code>sys.dm_db_vector_indexes</code> shows <code>graph_catchup_pending_percent</code> — background maintenance still to apply after heavy DML.</li>
+    <li><strong>Model calls:</strong> embedding the question is a network call on every search — cache frequent queries and watch for HTTP 429.</li>
+  </ul>
+
+  <h2 id="retrieval-augmented-generation">Retrieval-augmented generation (RAG)</h2>
+  <Mermaid code={ragFlow} caption="RAG in T-SQL: retrieve the rows that matter, turn them into compact JSON, wrap them in a grounded prompt, call the chat model and read the answer out of the response envelope." />
+
+  <h3 id="rag-use-cases">Identify use cases for RAG</h3>
+  <ul>
+    <li><strong>Good fits:</strong> questions answered from your own, changing data — product and support assistants, policy and document Q&amp;A, summarising a customer's history.</li>
+    <li><strong>Poor fits:</strong> precise aggregates and reports ("total sales by region") — write SQL; or knowledge the model already has and that never depends on your data.</li>
+    <li><strong>Why not fine-tuning:</strong> RAG reads current rows at question time and respects row-level security; a fine-tuned model is a snapshot.</li>
+  </ul>
+
+  <h3 id="prompts-with-sp-invoke-external-rest-endpoint">Create a prompt and send it with sp_invoke_external_rest_endpoint</h3>
+  <CodeBlock code={rag} />
+  <dl class="terms">
+    <dt>Arguments</dt>
+    <dd>
+      <code>@url</code> (HTTPS only), <code>@method</code> (default <code>POST</code>), <code>@headers</code> (flat JSON),
+      <code>@payload</code>, <code>@credential</code>, <code>@timeout</code> (1–230 s, default 30),
+      <code>@retry_count</code> (0–10) and <code>@response OUTPUT</code>.
+    </dd>
+    <dt>Return value</dt>
+    <dd><code>0</code> for any 2xx status; otherwise the HTTP status code itself. If the call cannot be made at all, an error is raised.</dd>
+    <dt>Response envelope</dt>
+    <dd><code>$.response.status.http.code</code> and <code>.description</code>, <code>$.response.headers</code>, and the endpoint's body under <code>$.result</code>.</dd>
+    <dt>Permissions</dt>
+    <dd><code>EXECUTE ANY EXTERNAL ENDPOINT</code> on the database, and <code>REFERENCES</code> on the credential.</dd>
+  </dl>
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Enabled by default in Azure SQL Database and Fabric. SQL Server 2025 and MI (2025 or AUTD policy) need 'external rest endpoint enabled'." />
+
+  <h3 id="convert-structured-data-to-json">Convert structured data to JSON for the model</h3>
+  <ul>
+    <li><code>FOR JSON PATH</code> turns a result set into an array of objects; column aliases become keys (use them to give the model readable names).</li>
+    <li><code>JSON_OBJECT</code> and <code>JSON_ARRAY</code> build the request body; <code>JSON_ARRAYAGG</code> aggregates rows into an array inside a larger object.</li>
+    <li>Send only the columns the answer needs — every column is tokens, cost and a possible data leak.</li>
+  </ul>
+
+  <h3 id="extract-model-responses">Send results and extract responses</h3>
+  <p>
+    The chat completion sits at <code>$.result.choices[0].message.content</code> — read it with <code>JSON_VALUE</code>
+    (scalar) or <code>JSON_QUERY</code> (object). Check the return code before reading, handle 429 (throttled) and
+    401/403 (credential) explicitly, and ask for structured output when the answer must be processed further.
+  </p>
+  <CodeBlock code={structured} />
+  <Callout type="tip" title="Ground the model and keep it honest">
+    <p>
+      Tell the model to answer <strong>only from the context</strong> and to say when it does not know; keep temperature
+      low for factual answers; and include identifiers in the context so the app can link the answer back to real rows.
+      Retrieval runs as the calling user, so RLS and permissions decide what can ever reach the prompt.
+    </p>
+  </Callout>
+</NoteLayout>

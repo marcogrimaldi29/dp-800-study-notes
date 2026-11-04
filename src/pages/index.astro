@@ -1,0 +1,296 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Callout from '../components/Callout.astro';
+import FluentIcon from '../components/FluentIcon.astro';
+import Mermaid from '../components/Mermaid.astro';
+import NavCard from '../components/NavCard.astro';
+import Sidebar from '../components/Sidebar.astro';
+import { MAX_WEIGHT, PAGES, SITE, SKILL_PAGES } from '../data/site';
+import { absolute, href } from '../lib/urls';
+
+const startPages = PAGES.filter((p) => p.group === 'start' && p.slug !== '');
+const deepPages = PAGES.filter((p) => p.group === 'deep');
+const reviewPages = PAGES.filter((p) => p.group === 'extras');
+
+const description = `Exam-focused study notes for Exam ${SITE.exam}: ${SITE.examTitle} (${SITE.certification}). Aligned to the skills measured as of ${SITE.skillsMeasured}, with platform-availability flags, Mermaid diagrams, T-SQL samples and exam caveats.`;
+
+const schema = [
+  {
+    '@type': 'Course',
+    name: `Exam ${SITE.exam}: ${SITE.examTitle} — Study Notes`,
+    description,
+    url: absolute(SITE.origin, ''),
+    inLanguage: 'en',
+    provider: { '@type': 'Person', name: SITE.author.name, url: SITE.author.site },
+    teaches: SKILL_PAGES.map((p) => p.label),
+    hasCourseInstance: { '@type': 'CourseInstance', courseMode: 'online', courseWorkload: 'PT40H' },
+  },
+];
+
+// One database, reached from both sides: developers ship schema to it through a
+// SQL project and a pipeline, applications reach it through Data API builder,
+// and the engine itself calls out to models. The platform choice wraps the
+// engine, so containment — not arrows from the side — carries that relationship.
+const onePicture = `
+flowchart TB
+  DEV["Developer<br/>SSMS · VS Code MSSQL · GitHub Copilot"] -->|"SQL project · pull request"| CI["GitHub Actions<br/>build .dacpac · deploy"]
+  APP["Apps and AI agents"] -->|"REST · GraphQL · MCP"| DAB["Data API builder"]
+  CI -->|"SqlPackage publish"| DB
+  DAB --> DB
+  subgraph PLAT["One of three platforms"]
+    direction TB
+    DB["Database objects<br/>tables · JSON · graph · programmability"] --> SEC["Security and performance<br/>RLS · masking · Query Store"]
+    SEC ~~~ AI["AI in T-SQL<br/>embeddings · VECTOR_SEARCH · hybrid"]
+  end
+  AI -->|"sp_invoke_external_rest_endpoint"| LLM["Model endpoint<br/>Microsoft Foundry · OpenAI · Ollama"]
+`;
+
+const studyOrder = `
+flowchart TB
+  F["Foundations<br/>platforms · tools · availability"] --> S1["Skill 1 · Design and develop<br/>35–40%"]
+  S1 --> S2["Skill 2 · Secure, optimize, deploy<br/>35–40%"]
+  S2 --> S3["Skill 3 · AI capabilities<br/>25–30%"]
+  S3 --> X["Exam tips and caveats<br/>final review"]
+  S1 -.->|"alongside"| T["Advanced T-SQL<br/>deep dive"]
+  S2 -.->|"alongside"| C["Configuration reference<br/>files and flags"]
+  S3 -.->|"alongside"| V["Vectors, search and RAG<br/>deep dive"]
+`;
+
+const LEARN = 'https://learn.microsoft.com/en-us/training/modules/';
+const modules = [
+  { path: 'Design and develop database solutions', title: 'Design and implement database objects with SQL', slug: 'design-implement-database-objects', maps: 'Skill 1' },
+  { path: '', title: 'Implement programmability objects with SQL', slug: 'implement-programmability-objects', maps: 'Skill 1' },
+  { path: '', title: 'Write advanced T-SQL code', slug: 'write-advanced-sql-code', maps: 'Skill 1 · Advanced T-SQL' },
+  { path: '', title: 'Implement SQL solutions by using AI-assisted tools', slug: 'design-implement-sql-solutions-ai-assisted-tools', maps: 'Skill 1 · Config reference' },
+  { path: 'Secure, optimize, and deploy database solutions', title: 'Implement data security and compliance with SQL', slug: 'implement-data-security-compliance', maps: 'Skill 2' },
+  { path: '', title: 'Optimize database performance', slug: 'optimize-database-performance', maps: 'Skill 2' },
+  { path: '', title: 'Implement CI/CD by using SQL database projects', slug: 'implement-cicd-sql-database-projects', maps: 'Skill 2 · Config reference' },
+  { path: '', title: 'Integrate SQL solutions with Azure services', slug: 'integrate-sql-solutions-azure-services', maps: 'Skill 2 · Config reference' },
+  { path: 'Implement AI capabilities in database solutions', title: 'Design and implement models and embeddings with SQL', slug: 'design-implement-models-embeddings-with-sql', maps: 'Skill 3 · Vectors & RAG' },
+  { path: '', title: 'Design and implement intelligent search with SQL', slug: 'design-implement-intelligent-search-with-sql', maps: 'Skill 3 · Vectors & RAG' },
+  { path: '', title: 'Design and implement RAG with SQL', slug: 'design-implement-rag-with-sql', maps: 'Skill 3 · Vectors & RAG' },
+];
+---
+
+<BaseLayout
+  title={`${SITE.name} · ${SITE.certShort}`}
+  description={description}
+  slug=""
+  ogType="website"
+  schema={schema}
+>
+  <div class="layout" data-sidebar="expanded" data-drawer="closed">
+    <Sidebar current="" />
+
+    {/* The home page shares the note pages' rail so navigation never changes
+        shape between them, but keeps a plain block flow: it has a hero rather
+        than a page head, and no section outline. */}
+    <main class="page page-home" id="main">
+      <section class="hero">
+        <span class="eyebrow">Microsoft Certification · Exam {SITE.exam}</span>
+        <h1>{SITE.certShort}</h1>
+        <p>
+          A complete, exam-focused companion for <strong>{SITE.examTitle}</strong>, built around the
+          <strong>skills measured as of {SITE.skillsMeasured}</strong>. Learn the T-SQL, the security and deployment
+          controls and the in-database AI the exam tests — and which of SQL Server 2025, Azure SQL and SQL database in
+          Fabric each feature actually runs on.
+        </p>
+        <div class="hero-meta">
+          {
+            SITE.heroLabels.map((l) => (
+              <span>
+                <FluentIcon name={l.icon} size={16} />
+                {l.text}
+              </span>
+            ))
+          }
+        </div>
+      </section>
+
+      <div class="content">
+        <div class="card">
+          <p class="lead">
+            {SITE.exam} validates that you can <strong>design, build, secure, optimize and deploy</strong> databases
+            across Microsoft's SQL platforms and <strong>bring AI into them</strong> — external models, embeddings,
+            vector and hybrid search, and retrieval-augmented generation written in T-SQL. It is a developer's exam: you
+            are expected to read T-SQL, a <code>dab-config.json</code>, an SDK-style <code>.sqlproj</code> and a GitHub
+            Actions workflow, and spot what is missing or wrong.
+          </p>
+          <Callout type="note" title="How to use these notes">
+            <p>
+              Start with <a href={href('sql-foundations')}>SQL platforms &amp; tooling</a> — most traps on this exam are
+              about <em>where</em> a feature exists and whether it is still in preview. Work the three skill pages in
+              outline order, open each deep dive alongside the skill it supports, and keep the
+              <a href={href('config-reference')}>Configuration reference</a> to hand while you practise. Drill
+              <a href={href('exam-tips')}>Exam tips &amp; caveats</a> in the final week. These notes are a
+              <strong>companion</strong>: pair every page with hands-on time in a free Azure SQL Database or a SQL
+              database in a Fabric trial, and with the official Learn modules listed below.
+            </p>
+          </Callout>
+        </div>
+
+        <Callout type="rename" title="Names you will meet in two versions">
+          <p>
+            <strong>Azure AI Foundry</strong> is now <strong>Microsoft Foundry</strong> — the study guide uses the new
+            name, while many SQL reference pages still say "Azure OpenAI in Azure AI Foundry Models". The Fabric-hosted
+            engine is <strong>SQL database in Microsoft Fabric</strong> (not to be confused with the Fabric
+            <em>Warehouse</em> or a lakehouse's <em>SQL analytics endpoint</em>). SQL Server 2025 is version
+            <strong>17.x</strong> in every "Applies to" banner. The full list is on the
+            <a href={`${href('exam-tips')}#renames-and-discrepancies`}>Exam tips</a> page.
+          </p>
+        </Callout>
+
+        <h2 id="skills-at-a-glance">Skills at a glance</h2>
+        <p>
+          Two areas carry the same <strong>35–40%</strong> and together make up three quarters of the exam; the AI area
+          is the smallest at <strong>25–30%</strong>, but its vocabulary — embeddings, chunking, ANN versus ENN, RRF —
+          also turns up inside the other two.
+        </p>
+        <div class="card">
+          <div class="weight-list">
+            {
+              SKILL_PAGES.map((p) => (
+                <div class="weight-row" style={`--accent:${p.accent}`}>
+                  <div class="wr-top">
+                    <span class="wr-name">
+                      <a href={href(p.slug)}>
+                        {p.skill} · {p.label}
+                      </a>
+                    </span>
+                    <span class="wr-pct">{p.weight}</span>
+                  </div>
+                  <div class="progress" role="presentation">
+                    <span data-pct={(((p.weightPct ?? 0) / MAX_WEIGHT) * 100).toFixed(1)} />
+                  </div>
+                </div>
+              ))
+            }
+          </div>
+          <p class="wr-note">Bars are drawn to scale against the largest weighting in the outline, {MAX_WEIGHT}%.</p>
+        </div>
+
+        <h2 id="skills-measured">Skills measured</h2>
+        <div class="card-grid">
+          {SKILL_PAGES.map((p) => <NavCard page={p} />)}
+        </div>
+
+        <h2 id="start-here-deep-dives-and-review">Start here, go deeper, review</h2>
+        <div class="card-grid">
+          {startPages.map((p) => <NavCard page={p} cta="Start here" />)}
+          {deepPages.map((p) => <NavCard page={p} cta="Read the code" />)}
+          {reviewPages.map((p) => <NavCard page={p} cta="Drill these" />)}
+        </div>
+
+        <h2 id="before-you-book">Before you book</h2>
+        <div class="stat-grid">
+          <div class="stat"><div class="s-num">700</div><div class="s-lbl">Score needed to pass, on a scale of 1–1000</div></div>
+          <div class="stat"><div class="s-num">100</div><div class="s-lbl">Minutes for an associate exam without labs</div></div>
+          <div class="stat"><div class="s-num">3</div><div class="s-lbl">Skill areas, two of them at 35–40%</div></div>
+          <div class="stat"><div class="s-num">1 yr</div><div class="s-lbl">Validity, renewed by a free online assessment</div></div>
+        </div>
+
+        <Callout type="exam" title="Exam reality check">
+          <p>
+            Expect the usual role-based formats — multiple choice, drag-and-drop ordering, hotspot drop-downs, yes/no
+            statement sets and case studies. Most questions describe a requirement and ask for the right object, option
+            or configuration: <em>which</em> encryption, <em>which</em> isolation level, <em>which</em> change-handling
+            mechanism, <em>which</em> search. The study guide warns that <strong>commonly used preview features can
+            appear</strong>, and on DP-800 that matters more than usual — vector indexes and <code>VECTOR_SEARCH</code>
+            are GA in Azure SQL and Fabric but still preview in SQL Server 2025. Try the
+            <a href="https://aka.ms/examdemo" target="_blank" rel="noopener">exam sandbox</a> and the free
+            <a href="https://aka.ms/DP800-PA" target="_blank" rel="noopener">practice assessment</a> before you book;
+            your registration confirms the exact exam time.
+          </p>
+        </Callout>
+
+        <h2 id="the-exam-in-one-picture">The exam in one picture</h2>
+        <p>
+          Almost every {SITE.exam} question sits somewhere on this diagram. Schema reaches the database through a SQL
+          project and a pipeline; applications and agents reach it through Data API builder; and the engine itself calls
+          a model endpoint to embed, search and generate. If you can say which box a feature lives in — and which
+          platforms that box supports it on — you can usually eliminate half the answers.
+        </p>
+        <Mermaid
+          code={onePicture}
+          caption="Skill 1 is the database box, Skill 2 is security, performance, the pipeline and Data API builder, and Skill 3 is AI in T-SQL and the model endpoint it calls."
+        />
+
+        <h2 id="suggested-study-order">Suggested study order</h2>
+        <Mermaid
+          code={studyOrder}
+          caption="Foundations first, then the skills in outline order, with each deep dive read alongside the skill it supports. Finish with the exam tips."
+        />
+
+        <h2 id="official-learning-path">The official learning path</h2>
+        <p>
+          Course {SITE.course} is a three-day instructor-led course, and its self-paced content is three Microsoft Learn
+          learning paths with eleven modules — one path per skill area. Each module ends with an exercise or a knowledge
+          check; read each one alongside the page it maps to.
+        </p>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>Learn module</th><th>Learning path</th><th>Maps to</th></tr></thead>
+            <tbody>
+              {
+                modules.map((m, i) => (
+                  <tr>
+                    <td>
+                      <a href={`${LEARN}${m.slug}/`} target="_blank" rel="noopener">
+                        {m.title}
+                      </a>
+                    </td>
+                    <td>{m.path || (i < 4 ? 'Design and develop database solutions' : i < 8 ? 'Secure, optimize, and deploy database solutions' : 'Implement AI capabilities in database solutions')}</td>
+                    <td>{m.maps}</td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <Callout type="tip" title="Two habits that pay off more than extra reading">
+          <p>
+            <strong>One:</strong> for every feature, learn its <em>platform line</em> — where it is GA, where it is
+            preview and what switch turns it on (<code>PREVIEW_FEATURES</code>, <code>external rest endpoint
+            enabled</code>, an MI update policy). <strong>Two:</strong> build the RAG pipeline once, end to end, in a
+            free Azure SQL Database: create an external model, chunk and embed a table, add a vector index, run a hybrid
+            query, then call a chat model with <code>sp_invoke_external_rest_endpoint</code>. An hour of that teaches
+            Skill 3 better than any page.
+          </p>
+        </Callout>
+
+        <Callout type="warn" title="Disclaimer">
+          <p>
+            These notes are an independent study aid for <strong>learning purposes only</strong>, not affiliated with or
+            endorsed by Microsoft. SQL Server, Azure SQL and Microsoft Fabric ship changes often, and features move
+            from preview to general availability between exam revisions — <strong>always verify every detail against
+            the official Microsoft documentation</strong> linked throughout before relying on it.
+          </p>
+        </Callout>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Fill the weighting bars once, when they scroll into view. Under reduced
+    // motion the global stylesheet collapses the transition, so they fill at once.
+    const bars = document.querySelectorAll<HTMLElement>('.progress > span[data-pct]');
+    if (bars.length) {
+      const fill = (el: HTMLElement) => (el.style.width = `${el.dataset.pct}%`);
+      if (!('IntersectionObserver' in window)) bars.forEach(fill);
+      else {
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              fill(entry.target as HTMLElement);
+              observer.unobserve(entry.target);
+            });
+          },
+          { threshold: 0.35 },
+        );
+        bars.forEach((b) => observer.observe(b));
+      }
+    }
+  </script>
+</BaseLayout>

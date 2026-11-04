@@ -1,0 +1,27 @@
+---
+import { neighbours } from '../data/site';
+import { href } from '../lib/urls';
+import FluentIcon from './FluentIcon.astro';
+
+interface Props {
+  current: string;
+}
+
+const { current } = Astro.props;
+const { prev, next } = neighbours(current);
+---
+
+<nav class="pager" aria-label="Page navigation">
+  <a class="prev" href={href(prev ? prev.slug : '')} rel="prev">
+    <span class="pg-dir"><FluentIcon name="arrow_left" size={16} /> Previous</span>
+    <span class="pg-title">{prev ? prev.label : 'Home'}</span>
+  </a>
+  {
+    next && (
+      <a class="next" href={href(next.slug)} rel="next">
+        <span class="pg-dir">Next <FluentIcon name="arrow_right" size={16} /></span>
+        <span class="pg-title">{next.label}</span>
+      </a>
+    )
+  }
+</nav>

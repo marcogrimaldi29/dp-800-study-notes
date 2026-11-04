@@ -1,0 +1,29 @@
+---
+import type { NotePage } from '../data/site';
+import { href } from '../lib/urls';
+import FluentIcon from './FluentIcon.astro';
+
+/**
+ * A study-page card in DP-700 v2's nav-card style: a 5px accent stripe down
+ * the left edge, an uppercase accent badge, a tinted Fluent icon tile and a
+ * short description. The weightings themselves are drawn in the "Skills at a
+ * glance" list on the home page, so the card only names its role.
+ */
+interface Props {
+  page: NotePage;
+  /** Call to action in the card foot. */
+  cta?: string;
+}
+
+const { page, cta = 'Explore' } = Astro.props;
+---
+
+<a class="nav-card" href={href(page.slug)} style={`--accent:${page.accent}`}>
+  <div class="nc-top">
+    <div class="card-icon"><FluentIcon name={page.icon} size={24} /></div>
+    <span class="nc-badge">{page.badge}</span>
+  </div>
+  <h3>{page.label}</h3>
+  <p>{page.blurb}</p>
+  <span class="nc-foot">{cta} <FluentIcon name="arrow_right" size={16} /></span>
+</a>

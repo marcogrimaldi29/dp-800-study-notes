@@ -1,0 +1,52 @@
+---
+import FluentIcon from './FluentIcon.astro';
+
+/**
+ * Boxed aside in DP-700 v2's five kinds, each with a 5px left rule, a Fluent
+ * icon and title in the kind's colour, and a faint tint behind the text. The
+ * notes' own kinds map onto those five rather than inventing new colours:
+ *
+ *   exam       → EXAM (amber, Target)       an exam-specific caveat or trap
+ *   tip        → TIP (green, Lightbulb)     a study or design recommendation
+ *   warn       → WARNING (orange, Warning)  something that will bite you
+ *   caution    → WARNING (orange, Warning)  a risk with a negative outcome
+ *   note       → NOTE (blue, Info)          neutral background detail
+ *   rename     → NOTE (blue, Info)          a renamed product or term
+ *   preview    → NOTE (blue, Info)          a preview / GA status to keep straight
+ *   code-note  → CODE (purple, Code)        a coding or configuration detail
+ *   syntax     → CODE (purple, Code)        a syntax gotcha
+ */
+interface Props {
+  type?: 'exam' | 'tip' | 'warn' | 'caution' | 'note' | 'rename' | 'preview' | 'code-note' | 'syntax';
+  title?: string;
+}
+
+const { type = 'note', title } = Astro.props;
+
+const KINDS = {
+  exam: { kind: 'exam', icon: 'target', name: 'Exam caveat' },
+  tip: { kind: 'tip', icon: 'lightbulb', name: 'Tip' },
+  warn: { kind: 'warn', icon: 'warning', name: 'Warning' },
+  note: { kind: 'note', icon: 'info', name: 'Note' },
+  code: { kind: 'code', icon: 'code', name: 'Code' },
+} as const;
+
+const map = {
+  exam: KINDS.exam,
+  tip: KINDS.tip,
+  warn: KINDS.warn,
+  caution: KINDS.warn,
+  note: KINDS.note,
+  rename: { ...KINDS.note, name: 'Renamed' },
+  preview: { ...KINDS.note, name: 'Preview status' },
+  'code-note': KINDS.code,
+  syntax: { ...KINDS.code, name: 'Syntax' },
+} as const;
+
+const k = map[type];
+---
+
+<div class={`callout callout-${k.kind}`}>
+  <p class="callout-title"><FluentIcon name={k.icon} size={20} />{title ?? k.name}</p>
+  <slot />
+</div>

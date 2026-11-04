@@ -1,0 +1,410 @@
+---
+import NoteLayout from '../../layouts/NoteLayout.astro';
+import AppliesTo from '../../components/AppliesTo.astro';
+import Callout from '../../components/Callout.astro';
+import CodeBlock from '../../components/CodeBlock.astro';
+import Mermaid from '../../components/Mermaid.astro';
+
+const logical = `
+flowchart TB
+  subgraph ROWS["Choose the rows"]
+    direction LR
+    FROM["1 · FROM<br/>JOIN · APPLY"] --> WHERE["2 · WHERE"]
+    WHERE --> GROUP["3 · GROUP BY"]
+    GROUP --> HAVING["4 · HAVING"]
+  end
+  subgraph SHAPE["Shape the result"]
+    direction LR
+    SELECT["5 · SELECT<br/>window functions here"] --> ORDER["6 · ORDER BY"]
+    ORDER --> TOP["7 · TOP · OFFSET"]
+  end
+  ROWS ~~~ SHAPE
+`;
+
+const cte = `-- Applies to: all four platforms
+-- A CTE names a step; it is not materialized, and it lives for one statement.
+WITH OrderTotals AS (
+    SELECT CustomerID, SUM(Total) AS Spend
+    FROM dbo.OrderHeader
+    WHERE OrderDate >= '2026-01-01'
+    GROUP BY CustomerID
+)
+SELECT c.Name, t.Spend
+FROM OrderTotals AS t
+JOIN dbo.Customer AS c ON c.CustomerID = t.CustomerID
+WHERE t.Spend > 10000;
+
+-- Recursive CTE: anchor member UNION ALL recursive member
+WITH OrgChart AS (
+    SELECT EmployeeID, ManagerID, Name, 0 AS Level
+    FROM dbo.Employee
+    WHERE ManagerID IS NULL                               -- anchor: the root
+    UNION ALL
+    SELECT e.EmployeeID, e.ManagerID, e.Name, oc.Level + 1
+    FROM dbo.Employee AS e
+    JOIN OrgChart AS oc ON e.ManagerID = oc.EmployeeID     -- recursive member
+)
+SELECT * FROM OrgChart
+OPTION (MAXRECURSION 200);                                 -- default 100; 0 = unlimited`;
+
+const windows = `-- Applies to: all four platforms (WINDOW clause and IGNORE NULLS: SQL Server 2022+ and Azure SQL)
+SELECT  CustomerID, OrderNo, OrderDate, Total,
+        ROW_NUMBER() OVER w                AS rn,          -- 1, 2, 3, 4 — unique
+        RANK()       OVER w                AS rnk,         -- 1, 2, 2, 4 — gaps after ties
+        DENSE_RANK() OVER w                AS drnk,        -- 1, 2, 2, 3 — no gaps
+        NTILE(4)     OVER (ORDER BY Total) AS quartile,
+        LAG(Total)  OVER (PARTITION BY CustomerID ORDER BY OrderDate) AS prev_total,
+        LEAD(OrderDate, 1, '9999-12-31') OVER (PARTITION BY CustomerID ORDER BY OrderDate) AS next_order,
+        SUM(Total) OVER (PARTITION BY CustomerID ORDER BY OrderDate
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total,
+        AVG(Total) OVER (PARTITION BY CustomerID ORDER BY OrderDate
+                         ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)         AS moving_avg_3,
+        LAST_VALUE(Total) OVER (PARTITION BY CustomerID ORDER BY OrderDate
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS last_total
+FROM dbo.OrderHeader
+WINDOW w AS (PARTITION BY CustomerID ORDER BY Total DESC);
+
+-- Top 3 orders per customer: window functions can't go in WHERE, so filter in an outer query
+WITH ranked AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY CustomerID ORDER BY Total DESC) AS rn
+    FROM dbo.OrderHeader
+)
+SELECT * FROM ranked WHERE rn <= 3;`;
+
+const jsonBuild = `-- Build JSON
+SELECT JSON_OBJECT('id': c.CustomerID, 'name': c.Name, 'vip': CAST(c.IsVip AS bit)
+                   ABSENT ON NULL) AS customer_json            -- default for JSON_OBJECT is NULL ON NULL
+FROM dbo.Customer AS c;
+
+SELECT JSON_ARRAY(1, N'two', NULL, 4) AS arr;                -- default ABSENT ON NULL → [1,"two",4]
+
+-- Aggregate rows into JSON (SQL Server 2025+, Azure SQL, Fabric)
+SELECT c.CustomerID,
+       JSON_ARRAYAGG(o.OrderNo ORDER BY o.OrderDate)         AS order_numbers,
+       JSON_OBJECTAGG(CAST(o.OrderNo AS nvarchar(20)) : o.Total) AS totals_by_order
+FROM dbo.Customer AS c
+JOIN dbo.OrderHeader AS o ON o.CustomerID = c.CustomerID
+GROUP BY c.CustomerID;
+
+-- Shape a whole result set as JSON
+SELECT TOP (3) o.OrderNo AS [order.no], o.OrderDate AS [order.date], c.Name AS [customer.name]
+FROM dbo.OrderHeader AS o JOIN dbo.Customer AS c ON c.CustomerID = o.CustomerID
+FOR JSON PATH, ROOT('orders'), INCLUDE_NULL_VALUES;           -- dot aliases nest objects`;
+
+const jsonRead = `DECLARE @doc json = N'{
+  "order": { "no": 1001, "status": "shipped",
+             "lines": [ {"sku": "A-1", "qty": 2}, {"sku": "B-7", "qty": 1} ] },
+  "tags": ["priority", "gift"] }';
+
+SELECT JSON_VALUE(@doc, '$.order.status')           AS status,       -- scalar → nvarchar(4000)
+       JSON_QUERY(@doc, '$.order.lines')            AS lines,        -- object or array
+       JSON_PATH_EXISTS(@doc, '$.order.coupon')     AS has_coupon,   -- 0
+       JSON_CONTAINS(@doc, 'gift', '$.tags[*]')     AS is_gift,      -- 1 (SQL Server 2025+, Azure SQL, Fabric)
+       JSON_VALUE(@doc, 'strict $.order.missing')   AS boom;         -- strict: error instead of NULL
+
+-- Shred an array into rows with a typed schema
+SELECT l.sku, l.qty
+FROM OPENJSON(@doc, '$.order.lines')
+     WITH (sku nvarchar(20) '$.sku',
+           qty int          '$.qty') AS l;
+
+-- Update in place
+SET @doc = JSON_MODIFY(@doc, '$.order.status', 'delivered');
+SET @doc = JSON_MODIFY(@doc, 'append $.tags', 'reviewed');`;
+
+const regex = `-- Applies to: SQL Server 2025, Azure SQL Database, Azure SQL MI (2025/AUTD), SQL database in Fabric
+-- REGEXP_LIKE and the table-valued functions need compatibility level 170.
+
+-- Validate: a CHECK constraint with REGEXP_LIKE
+ALTER TABLE dbo.Customer ADD CONSTRAINT CK_Customer_Email
+    CHECK (REGEXP_LIKE(Email, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$'));
+
+SELECT Name
+FROM dbo.Customer
+WHERE REGEXP_LIKE(Phone, '^\\+34 ?[6-9]\\d{8}$');           -- anchored with ^ → SARGable
+
+SELECT REGEXP_REPLACE(N'Call 555-123-4567 now', '\\d{3}-\\d{3}-(\\d{4})', 'XXX-XXX-\\1') AS masked,  -- \\1 backreference in replacement
+       REGEXP_SUBSTR(N'ORD-2026-00042', '\\d+', 1, 2)         AS second_number,  -- 00042
+       REGEXP_INSTR(N'abc123', '\\d')                         AS first_digit_at, -- 4
+       REGEXP_COUNT(N'a,b,,c', ',')                           AS commas;         -- 3
+
+-- Table-valued: every match, and split by a pattern
+SELECT match_id, match_value FROM REGEXP_MATCHES(N'#sql #ai #vectors', '#(\\w+)');
+SELECT value FROM REGEXP_SPLIT_TO_TABLE(N'red; green ,blue', '\\s*[;,]\\s*');`;
+
+const fuzzy = `-- Preview on all four platforms; SQL Server 2025 needs PREVIEW_FEATURES = ON.
+-- Supported with Windows and binary collations, not non-binary SQL_* collations.
+SELECT EDIT_DISTANCE(N'Jonathan', N'Johnathan')               AS edits,          -- 1
+       EDIT_DISTANCE_SIMILARITY(N'Jonathan', N'Johnathan')    AS edit_sim,       -- 0–100
+       JARO_WINKLER_DISTANCE(N'Martha', N'Marhta')            AS jw_distance,    -- float, 0 = identical
+       JARO_WINKLER_SIMILARITY(N'Martha', N'Marhta')          AS jw_sim;         -- 0–100, rewards a shared prefix
+
+-- Find probable duplicate customers
+SELECT a.CustomerID, b.CustomerID, a.Name, b.Name
+FROM dbo.Customer AS a
+JOIN dbo.Customer AS b ON a.CustomerID < b.CustomerID
+WHERE a.PostalCode = b.PostalCode                              -- block first: fuzzy compares are per pair
+  AND JARO_WINKLER_SIMILARITY(a.Name, b.Name) >= 90;`;
+
+const graph = `-- Applies to: SQL Server 2017+, Azure SQL Database, Azure SQL MI
+-- Friends of Alice, and friends of her friends (two hops)
+SELECT p2.Name AS friend, p3.Name AS friend_of_friend
+FROM dbo.Person AS p1, dbo.FriendOf AS f1, dbo.Person AS p2,
+     dbo.FriendOf AS f2, dbo.Person AS p3
+WHERE MATCH(p1-(f1)->p2-(f2)->p3)                              -- arrow = edge direction
+  AND p1.Name = N'Alice';
+
+-- Shortest path from Alice to everyone reachable, with the path as text
+SELECT p1.Name AS start_person,
+       STRING_AGG(p2.Name, N' -> ') WITHIN GROUP (GRAPH PATH) AS path,
+       LAST_VALUE(p2.Name)          WITHIN GROUP (GRAPH PATH) AS reached,
+       COUNT(p2.PersonID)           WITHIN GROUP (GRAPH PATH) AS hops
+FROM dbo.Person AS p1,
+     dbo.FriendOf FOR PATH AS fo,
+     dbo.Person   FOR PATH AS p2
+WHERE MATCH(SHORTEST_PATH(p1(-(fo)->p2)+))                     -- + = one or more hops; {1,3} = up to three
+  AND p1.Name = N'Alice';`;
+
+const correlated = `-- EXISTS: a semi-join, stops at the first match
+SELECT c.CustomerID, c.Name
+FROM dbo.Customer AS c
+WHERE EXISTS (SELECT 1 FROM dbo.OrderHeader AS o
+              WHERE o.CustomerID = c.CustomerID AND o.OrderDate >= '2026-10-01');
+
+-- NOT IN with a NULL in the subquery returns no rows at all — use NOT EXISTS
+SELECT p.ProductID
+FROM dbo.Product AS p
+WHERE NOT EXISTS (SELECT 1 FROM dbo.OrderLine AS l WHERE l.ProductID = p.ProductID);
+
+-- Correlated scalar subquery: one value per outer row
+SELECT c.CustomerID,
+       (SELECT MAX(o.OrderDate) FROM dbo.OrderHeader AS o WHERE o.CustomerID = c.CustomerID) AS last_order
+FROM dbo.Customer AS c;
+
+-- CROSS APPLY: a correlated table expression — the last two orders per customer
+SELECT c.Name, x.OrderNo, x.Total
+FROM dbo.Customer AS c
+CROSS APPLY (SELECT TOP (2) o.OrderNo, o.Total
+             FROM dbo.OrderHeader AS o
+             WHERE o.CustomerID = c.CustomerID
+             ORDER BY o.OrderDate DESC) AS x;      -- OUTER APPLY keeps customers with no orders`;
+
+const errors = `CREATE OR ALTER PROCEDURE dbo.usp_TransferStock
+    @FromWarehouse int, @ToWarehouse int, @ProductID int, @Qty int
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;                         -- runtime errors doom the transaction
+    BEGIN TRY
+        IF @Qty <= 0
+            THROW 50010, N'Quantity must be positive.', 1;   -- user error: number >= 50000, severity 16
+
+        BEGIN TRANSACTION;
+            UPDATE dbo.Stock SET Qty -= @Qty WHERE WarehouseID = @FromWarehouse AND ProductID = @ProductID;
+            IF @@ROWCOUNT = 0 THROW 50011, N'No stock row to move from.', 1;
+            UPDATE dbo.Stock SET Qty += @Qty WHERE WarehouseID = @ToWarehouse AND ProductID = @ProductID;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;   -- -1 uncommittable, 1 committable, 0 none
+        INSERT dbo.ErrorLog (Number, Severity, State, ProcName, Line, Message)
+        VALUES (ERROR_NUMBER(), ERROR_SEVERITY(), ERROR_STATE(),
+                ERROR_PROCEDURE(), ERROR_LINE(), ERROR_MESSAGE());
+        THROW;                                       -- re-raise the original error unchanged
+    END CATCH;
+END;`;
+
+const merge = `-- MERGE: one statement for insert, update and delete against a source
+MERGE dbo.Product WITH (HOLDLOCK) AS t          -- HOLDLOCK avoids a race between the match and the insert
+USING staging.Product AS s
+    ON t.Sku = s.Sku
+WHEN MATCHED AND (t.Name <> s.Name OR t.ListPrice <> s.ListPrice) THEN
+    UPDATE SET t.Name = s.Name, t.ListPrice = s.ListPrice
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Sku, Name, ListPrice, CategoryID) VALUES (s.Sku, s.Name, s.ListPrice, s.CategoryID)
+WHEN NOT MATCHED BY SOURCE THEN
+    DELETE
+OUTPUT $action, inserted.Sku, deleted.ListPrice AS old_price;   -- the statement must end with ;`;
+---
+
+<NoteLayout
+  slug="advanced-tsql-deep-dive"
+  description="DP-800 advanced T-SQL deep dive: common table expressions and recursion, window functions, the JSON function family, regular expressions, fuzzy string matching, graph MATCH and SHORTEST_PATH, correlated queries and APPLY, error handling with TRY…CATCH, THROW and XACT_STATE, and MERGE."
+  intro="The exam rarely asks you to write a query from a blank page; it shows you one and asks what it returns, why it fails, or which line fixes it. This page is the reading list for that: every family the outline names, with the defaults and edge cases that turn into answer options."
+>
+  <Callout type="note" title="Read the query in logical order">
+    <p>
+      Most "why does this fail" items come down to logical processing order: a window function or a column alias cannot
+      be used in <code>WHERE</code>, because <code>WHERE</code> runs before <code>SELECT</code>.
+    </p>
+  </Callout>
+  <Mermaid code={logical} caption="Logical query processing order. Window functions are computed in the SELECT phase, after WHERE, GROUP BY and HAVING — which is why ranking filters need a CTE or derived table." />
+
+  <h2 id="common-table-expressions">Common table expressions</h2>
+  <p>
+    A CTE names an intermediate result for <strong>one statement</strong>. It improves readability and lets one step be
+    referenced several times, but it is <strong>not materialized</strong> — referencing it twice can evaluate it twice. A
+    <strong>recursive</strong> CTE walks hierarchies and graphs-by-key: an anchor member, <code>UNION ALL</code>, and a
+    member that joins back to the CTE.
+  </p>
+  <CodeBlock code={cte} />
+  <Callout type="syntax" title="CTE gotchas">
+    <ul>
+      <li>The statement before <code>WITH</code> must end with a semicolon.</li>
+      <li>A recursive CTE stops with error 530 after 100 levels unless you set <code>OPTION (MAXRECURSION n)</code> on the outer statement.</li>
+      <li>A recursive member cannot use <code>GROUP BY</code>, <code>TOP</code>, aggregates or outer joins to the CTE.</li>
+    </ul>
+  </Callout>
+
+  <h2 id="window-functions">Window functions</h2>
+  <p>
+    A window function computes over a set of rows related to the current row <strong>without collapsing them</strong>.
+    <code>PARTITION BY</code> resets the window, <code>ORDER BY</code> orders it, and the <strong>frame</strong>
+    (<code>ROWS</code> or <code>RANGE BETWEEN …</code>) limits which rows an aggregate sees.
+  </p>
+  <CodeBlock code={windows} />
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Family</th><th>Functions</th><th>Watch for</th></tr></thead>
+      <tbody>
+        <tr><td>Ranking</td><td><code>ROW_NUMBER</code>, <code>RANK</code>, <code>DENSE_RANK</code>, <code>NTILE</code></td><td>Ties: <code>ROW_NUMBER</code> is arbitrary among equals unless the <code>ORDER BY</code> is unique</td></tr>
+        <tr><td>Offset</td><td><code>LAG</code>, <code>LEAD</code>, <code>FIRST_VALUE</code>, <code>LAST_VALUE</code></td><td><code>LAST_VALUE</code> with the default frame returns the <em>current</em> row — widen the frame to <code>UNBOUNDED FOLLOWING</code></td></tr>
+        <tr><td>Aggregate</td><td><code>SUM</code>, <code>AVG</code>, <code>COUNT</code>, <code>MIN</code>, <code>MAX</code> with <code>OVER</code></td><td>With <code>ORDER BY</code> and no frame, the default is <code>RANGE UNBOUNDED PRECEDING</code>: ties share a running total and it spills to tempdb — use <code>ROWS</code></td></tr>
+        <tr><td>Distribution</td><td><code>PERCENT_RANK</code>, <code>CUME_DIST</code>, <code>PERCENTILE_CONT</code>, <code>PERCENTILE_DISC</code></td><td><code>PERCENTILE_*</code> use <code>WITHIN GROUP (ORDER BY …)</code> plus <code>OVER (PARTITION BY …)</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="json-functions">JSON functions</h2>
+  <p>The outline names six functions; the family is larger, and the exam mixes them.</p>
+  <div class="table-wrap">
+    <table class="tbl t-teal">
+      <thead><tr><th>Task</th><th>Function</th><th>Platform line</th></tr></thead>
+      <tbody>
+        <tr><td>Build an object or array from values</td><td><code>JSON_OBJECT('key': value, …)</code>, <code>JSON_ARRAY(…)</code></td><td>SQL Server 2022+, Azure SQL, Fabric</td></tr>
+        <tr><td>Aggregate rows into an array or object</td><td><code>JSON_ARRAYAGG(… ORDER BY …)</code>, <code>JSON_OBJECTAGG(key : value)</code></td><td>SQL Server 2025+, Azure SQL, Fabric</td></tr>
+        <tr><td>Shape a result set</td><td><code>FOR JSON PATH</code> / <code>AUTO</code>, <code>ROOT</code>, <code>WITHOUT_ARRAY_WRAPPER</code>, <code>INCLUDE_NULL_VALUES</code></td><td>All</td></tr>
+        <tr><td>Read one scalar</td><td><code>JSON_VALUE</code> (returns <code>NULL</code> for an object or array)</td><td>All</td></tr>
+        <tr><td>Read an object or array</td><td><code>JSON_QUERY</code> (with <code>WITH ARRAY WRAPPER</code> in SQL Server 2025)</td><td>All</td></tr>
+        <tr><td>Shred into rows</td><td><code>OPENJSON</code>, with a <code>WITH</code> schema and <code>AS JSON</code> for nested parts</td><td>All</td></tr>
+        <tr><td>Test containment</td><td><code>JSON_CONTAINS(doc, value, path [, search_mode])</code> → 1, 0 or NULL</td><td>SQL Server 2025+, Azure SQL, Fabric</td></tr>
+        <tr><td>Test, change</td><td><code>ISJSON</code>, <code>JSON_PATH_EXISTS</code>, <code>JSON_MODIFY</code> (or the <code>json</code> type's <code>modify</code> method)</td><td>All (<code>modify</code>: <code>json</code> type only)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={jsonBuild} />
+  <CodeBlock code={jsonRead} />
+  <Callout type="exam" title="NULL handling differs by function">
+    <p>
+      <code>JSON_OBJECT</code> and <code>JSON_OBJECTAGG</code> default to <strong>NULL ON NULL</strong> (the key is kept
+      with a JSON <code>null</code>); <code>JSON_ARRAY</code> and <code>JSON_ARRAYAGG</code> default to <strong>ABSENT ON
+      NULL</strong> (the element is dropped). Paths are <strong>lax</strong> by default — a missing path returns
+      <code>NULL</code> — and <code>strict</code> turns that into an error.
+    </p>
+  </Callout>
+
+  <h2 id="regular-expressions">Regular expressions</h2>
+  <p>
+    Seven functions bring RE2-style regular expressions to T-SQL. Flags are <code>i</code> (case-insensitive),
+    <code>c</code> (case-sensitive, the default), <code>m</code> (multi-line) and <code>s</code> (dot matches newline).
+  </p>
+  <div class="table-wrap">
+    <table class="tbl">
+      <thead><tr><th>Function</th><th>Returns</th><th>Typical use</th></tr></thead>
+      <tbody>
+        <tr><td><code>REGEXP_LIKE(str, pattern [, flags])</code></td><td>Boolean (a predicate)</td><td><code>WHERE</code> and <code>CHECK</code> validation; needs compatibility level 170</td></tr>
+        <tr><td><code>REGEXP_REPLACE(str, pattern, repl [, start, occurrence, flags])</code></td><td>String; occurrence 0 = all</td><td>Masking, normalizing</td></tr>
+        <tr><td><code>REGEXP_SUBSTR(str, pattern [, start, occurrence, flags, group])</code></td><td>The nth match (or group), else NULL</td><td>Extracting codes</td></tr>
+        <tr><td><code>REGEXP_INSTR(…)</code></td><td>Start or end position</td><td>Locating a match</td></tr>
+        <tr><td><code>REGEXP_COUNT(str, pattern [, start, flags])</code></td><td>Number of matches</td><td>Counting tokens</td></tr>
+        <tr><td><code>REGEXP_MATCHES(str, pattern [, flags])</code></td><td>Table: <code>match_id</code>, positions, <code>match_value</code>, <code>substring_matches</code> (json)</td><td>All matches with capture groups</td></tr>
+        <tr><td><code>REGEXP_SPLIT_TO_TABLE(str, pattern [, flags])</code></td><td>Table of pieces</td><td>Splitting on a pattern, not one character</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <CodeBlock code={regex} />
+  <AppliesTo ss="ga" db="ga" mi="ga" fabric="ga" note="Not available in SQL Server 2022 or earlier. MI: SQL Server 2025 or Always-up-to-date policy. The table-valued functions need compatibility level 170 unless ALLOW_BUILTIN_TVF_IN_ALL_COMPAT_LEVELS is on." />
+  <Callout type="syntax" title="RE2, not .NET or PCRE in full">
+    <ul>
+      <li>No lookahead, lookbehind or backreferences inside the pattern (RE2 guarantees linear time).</li>
+      <li>Matching ignores the column's collation — <code>REGEXP_LIKE(x, 'abc')</code> is case-sensitive even on a <code>_CI_</code> column unless you pass <code>'i'</code>.</li>
+      <li><code>REGEXP_LIKE</code> can seek an index only when the pattern starts with <code>^</code>.</li>
+      <li>LOB input is limited to 2 MB; not usable in natively compiled modules.</li>
+    </ul>
+  </Callout>
+
+  <h2 id="fuzzy-string-matching">Fuzzy string matching</h2>
+  <p>
+    Fuzzy functions score how alike two strings are — for typos, transpositions and near-duplicate names that
+    <code>LIKE</code> and regex cannot catch. <strong>Edit distance</strong> (restricted Damerau-Levenshtein) counts
+    insertions, deletions, substitutions and adjacent transpositions; <strong>Jaro-Winkler</strong> rewards a shared prefix
+    and suits person and company names.
+  </p>
+  <CodeBlock code={fuzzy} />
+  <AppliesTo ss="preview" db="preview" mi="preview" fabric="preview" />
+  <dl class="terms">
+    <dt>Distance or similarity?</dt>
+    <dd>Distance functions suit an absolute threshold ("at most 2 edits"); similarity functions return 0–100, easy to compare across strings of different lengths.</dd>
+    <dt>Not semantic</dt>
+    <dd>"Car" and "automobile" are far apart by edit distance — that is a job for vector search.</dd>
+  </dl>
+
+  <h2 id="graph-queries-with-match">Graph queries with MATCH</h2>
+  <p>
+    <code>MATCH</code> describes a pattern of nodes and edges in ASCII-art form inside the <code>WHERE</code> clause:
+    <code>node-(edge)-&gt;node</code>. Node and edge tables are listed in <code>FROM</code> (comma-separated);
+    <code>SHORTEST_PATH</code> with <code>FOR PATH</code> aliases finds paths of arbitrary length, aggregated with
+    <code>WITHIN GROUP (GRAPH PATH)</code>.
+  </p>
+  <CodeBlock code={graph} />
+  <ul>
+    <li>The arrow sets direction: <code>p1-(f)-&gt;p2</code> follows edges from <code>p1</code> to <code>p2</code>; <code>p1&lt;-(f)-p2</code> reverses it.</li>
+    <li><code>MATCH</code> combines with ordinary predicates using <code>AND</code>; it can't sit under <code>OR</code> or <code>NOT</code>.</li>
+    <li>Inside <code>SHORTEST_PATH</code>, tables marked <code>FOR PATH</code> can only be projected through graph-path aggregates (<code>STRING_AGG</code>, <code>LAST_VALUE</code>, <code>COUNT</code>, <code>SUM</code>…).</li>
+  </ul>
+
+  <h2 id="correlated-queries">Correlated queries</h2>
+  <p>
+    A correlated subquery refers to the outer row, so it is logically evaluated once per outer row (the optimizer usually
+    turns it into a join). <code>EXISTS</code> and <code>APPLY</code> are the two forms the exam expects you to reach for.
+  </p>
+  <CodeBlock code={correlated} />
+  <Callout type="exam" title="NOT IN and NULL">
+    <p>
+      <code>WHERE x NOT IN (SELECT y …)</code> returns <strong>no rows</strong> if the subquery yields a single
+      <code>NULL</code>, because <code>x &lt;&gt; NULL</code> is unknown. <code>NOT EXISTS</code> has no such trap — it is
+      the correct answer whenever the column is nullable.
+    </p>
+  </Callout>
+
+  <h2 id="error-handling">Error handling</h2>
+  <CodeBlock code={errors} />
+  <div class="table-wrap">
+    <table class="tbl t-slate">
+      <thead><tr><th>Construct</th><th>Behaviour</th></tr></thead>
+      <tbody>
+        <tr><td><code>TRY…CATCH</code></td><td>Catches errors with severity 11–19. Compile errors in the same batch, and severity 20+ (connection-terminating), are not caught.</td></tr>
+        <tr><td><code>THROW</code> (no arguments)</td><td>Inside <code>CATCH</code>: re-raises the original error number, message and state — the preferred way to propagate.</td></tr>
+        <tr><td><code>THROW number, message, state</code></td><td>Raises a user error: number 50000 or higher, severity always 16; the previous statement must end with <code>;</code>.</td></tr>
+        <tr><td><code>RAISERROR</code></td><td>Legacy: chooses severity, supports <code>printf</code> formatting, does not by itself stop the batch below severity 11.</td></tr>
+        <tr><td><code>XACT_STATE()</code></td><td><code>1</code> open and committable, <code>-1</code> open but doomed (must roll back), <code>0</code> no transaction.</td></tr>
+        <tr><td><code>SET XACT_ABORT ON</code></td><td>Any runtime error rolls back the whole transaction — recommended in procedures that open transactions.</td></tr>
+        <tr><td><code>ERROR_NUMBER()</code>, <code>ERROR_MESSAGE()</code>, <code>ERROR_SEVERITY()</code>, <code>ERROR_STATE()</code>, <code>ERROR_LINE()</code>, <code>ERROR_PROCEDURE()</code></td><td>Only meaningful inside <code>CATCH</code>; <code>NULL</code> elsewhere.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="merge">MERGE</h2>
+  <p>
+    <code>MERGE</code> synchronizes a target with a source in one statement — the usual tool for reference data in a
+    post-deployment script and for upserts from staging. <code>OUTPUT $action</code> reports what happened to each row.
+  </p>
+  <CodeBlock code={merge} />
+  <Callout type="warn" title="MERGE hazards">
+    <ul>
+      <li>A source with duplicate keys raises an error when two source rows match the same target row.</li>
+      <li>Without <code>HOLDLOCK</code> (serializable range locks), two concurrent upserts can both decide "not matched" and insert duplicates.</li>
+      <li><code>WHEN NOT MATCHED BY SOURCE THEN DELETE</code> on a partial source deletes everything not in it — filter the target with a CTE first.</li>
+    </ul>
+  </Callout>
+</NoteLayout>
