@@ -52,7 +52,8 @@ quickly. Treat the notes as a study companion and verify anything decision-criti
 
 SQL Server, Azure SQL and Fabric ship changes often, and features move from preview to general availability between
 exam revisions. If something here is wrong or out of date, please
-[report an issue](https://github.com/marcogrimaldi29/dp-800-study-notes/issues).
+[report an issue](https://github.com/marcogrimaldi29/dp-800-study-notes/issues). The
+[contributing guide](.github/CONTRIBUTING.md) explains what makes a report easy to fix and what's out of scope.
 
 ## ⚠️ Disclaimer
 
