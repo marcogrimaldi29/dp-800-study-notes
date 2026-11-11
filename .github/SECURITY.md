@@ -61,3 +61,6 @@ instead, starting it with **"Security: DP-800 Study Notes"** so it's easy to spo
 I maintain this repo on my own, so responses are best effort. I'll confirm I've received your report, keep you posted
 in the private report while I look into it, and let you know when it's fixed. If you'd like to be credited, say so and
 I'll credit you in the security advisory or the fix.
+
+Dependabot alerts are turned on for this repo, so known vulnerabilities in dependencies are usually flagged without a
+report.
